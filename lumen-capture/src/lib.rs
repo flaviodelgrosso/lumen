@@ -268,6 +268,22 @@ impl ScapCapture {
       ..Default::default()
     };
     let options = Self::fit_encodable(options);
+    // Windows: the WGC engine crops frames at the full target size and
+    // ignores `output_resolution` (unlike ScreenCaptureKit, it cannot scale
+    // natively). If the fit probe fell below `Captured`, the display is
+    // larger than the encoder ceiling and every frame would mismatch the
+    // configured size — fail fast with the real reason instead.
+    #[cfg(target_os = "windows")]
+    if !matches!(options.output_resolution, Resolution::Captured) {
+      let mut probe = options.clone();
+      probe.output_resolution = Resolution::Captured;
+      let [w, h] = scap::capturer::get_output_frame_size(&probe);
+      return Err(CaptureError::StartFailed(format!(
+        "display {w}x{h} exceeds the 3840x2160 encoder limit and Windows \
+         capture cannot scale it; capture a window or lower the display \
+         resolution"
+      )));
+    }
     let [width, height] = scap::capturer::get_output_frame_size(&options);
     let capturer = scap::capturer::Capturer::build(options).map_err(|e| match e {
       scap::capturer::CapturerBuildError::NotSupported => CaptureError::NotSupported,
@@ -288,6 +304,10 @@ impl ScapCapture {
   /// `ScreenCaptureKit` then scales the frames natively, so downscaling
   /// costs no CPU in our pipeline. `get_output_frame_size` is the exact
   /// sizing function the scap engine uses, so the probe cannot drift.
+  ///
+  /// The Windows backend honors a preset only in the size it *reports*, not
+  /// in the frames it crops out (see the guard in [`Self::build`]), so a
+  /// non-`Captured` result there is an unsupported target, not a downscale.
   fn fit_encodable(mut options: Options) -> Options {
     let max = Dimensions::MAX_ENCODABLE;
     for resolution in [

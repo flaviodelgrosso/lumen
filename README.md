@@ -59,11 +59,12 @@ The Windows build is verified in CI (`cargo check`/`test`/`clippy`/`build` on a 
 
 1. `lumen displays` lists monitors and `lumen windows` lists app windows; ids round-trip into `--display` / `--window` (scap derives target ids from `HMONITOR`/`HWND` truncated to `u32` — verify the printed id selects the intended target).
 2. `lumen serve` captures the primary display and a non-primary display at **100%, 125% and 150% display scaling** (scap sizes WGC output from `DEVMODE`/`GetWindowRect` × effective DPI; the frame stride may also exceed the logical width — Lumen keeps the frame's logical size and repacks padded rows, but the crop math is scap's).
-3. Window capture of a normal (non-elevated) window, incl. a window on a secondary monitor with different DPI.
-4. A capture start failure (e.g. the window vanishes mid-start) surfaces as `capture failed to start: …` — scap's Windows engine still unwraps internally, so a panic there would be an upstream bug to report, not a Lumen error path.
-5. The banner shows `Audio: unavailable — video only`, and viewers play video with no audio track.
-6. Chromium viewers connect over mDNS: on first run Windows asks to allow `lumen` through the firewall; accept it on the **Private** network profile, then verify a Chrome/Edge viewer on another device connects (a VPN/virtual adapter without multicast routing fails the same way as on macOS — see [Troubleshooting](#troubleshooting)).
-7. Ctrl+C shuts the server down cleanly (no orphaned `lumen.exe`).
+3. On a display **larger than 3840×2160** (5K/6K/8K), `lumen serve` exits at startup with `display <W>x<H> exceeds the 3840x2160 encoder limit…` — the WGC backend cannot scale (scap-vc limitation), so this is expected behavior, not a bug; verify the message appears and that window targets still work.
+4. Window capture of a normal (non-elevated) window, incl. a window on a secondary monitor with different DPI.
+5. A capture start failure (e.g. the window vanishes mid-start) surfaces as `capture failed to start: …` — scap's Windows engine still unwraps internally, so a panic there would be an upstream bug to report, not a Lumen error path.
+6. The banner shows `Audio: unavailable — video only`, and viewers play video with no audio track.
+7. Chromium viewers connect over mDNS: on first run Windows asks to allow `lumen` through the firewall; accept it on the **Private** network profile, then verify a Chrome/Edge viewer on another device connects (a VPN/virtual adapter without multicast routing fails the same way as on macOS — see [Troubleshooting](#troubleshooting)).
+8. Ctrl+C shuts the server down cleanly (no orphaned `lumen.exe`).
 
 If any item fails on hardware, the fix belongs either in the platform-gated code in `lumen-capture` or upstream in `scap-vc`; the macOS implementation is unaffected either way.
 
