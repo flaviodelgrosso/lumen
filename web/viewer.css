@@ -84,6 +84,15 @@ body {
   transform: scaleX(-1); /* horizontal flip */
 }
 
+/* Invisible audio sink (see index.html): keeps the stage grid to a single
+   track and never takes part in the layout. */
+#screen-audio {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
 /* ---------- overlay (waiting / errors) ---------- */
 
 #overlay {

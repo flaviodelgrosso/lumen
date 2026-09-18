@@ -9,6 +9,7 @@
 
   const stage = document.getElementById("stage");
   const video = document.getElementById("screen");
+  const audioEl = document.getElementById("screen-audio");
   const overlay = document.getElementById("overlay");
   const overlayIcon = document.getElementById("overlay-icon");
   const glyphErr = document.getElementById("overlay-glyph-err");
@@ -257,71 +258,105 @@
 
   /* ---------------- playback recovery ---------------- */
 
-  // Three distinct failure modes freeze the viewer around fullscreen,
-  // window maximize/restore or visibility transitions:
-  //  1. iOS Safari pauses the <video> (its native fullscreen exit does
-  //     this by design) and `autoplay` never re-fires for an OS pause.
-  //  2. The element keeps claiming "playing" while its render layer is
-  //     frozen (WebKit/Chromium bug around fullscreen and window zoom
-  //     transitions); play() is a no-op there.
-  //  3. iOS refuses programmatic play() — even muted — for an element
-  //     that played through its native fullscreen, until a new user
-  //     gesture arrives.
-  // recoverPlayback() covers 1, probeFrameProgress() detects 2, and a
-  // refused retry chain escalates to reattachStream(), which covers 2
-  // and 3 for muted playback; unmuted audio still waits for the next tap.
+  // iOS owns the fullscreen <video>: the native player takes over on
+  // enter, pauses the element on exit (WebKit exits fullscreen first and
+  // pauses second), and its autoplay session refuses `play()` on any
+  // element carrying an audible audio track until a fresh user gesture
+  // arrives. That is why an unmuted stream froze after the maximize/
+  // de-maximize round-trip until the next tap: every programmatic play()
+  // was rejected with NotAllowedError and the tap merely supplied the
+  // missing activation — the WebRTC connection never failed.
+  //
+  // The viewer is therefore split in two: this video element carries the
+  // video track ONLY and stays permanently muted, so its play() is always
+  // allowed and it auto-resumes after every fullscreen/rotation
+  // transition; audio rides `audioEl`, which never enters fullscreen and
+  // keeps playing across the round-trip. What remains here covers only
+  // the two residual lifecycle gaps:
+  //  1. the OS pause lands AFTER the exit event fires, so a play() issued
+  //     inside the handler can be swallowed — the settled retry chain
+  //     re-plays once the transition has actually completed;
+  //  2. the render layer can still freeze while the element claims
+  //     "playing" — the frame probe detects it and reattachStream()
+  //     rebuilds the pipeline without touching the peer connection.
+
+  // Attempt playback and surface the rejection reason instead of
+  // swallowing it: a refused play() (autoplay policy) is a different
+  // failure from a frozen render layer, and hiding that distinction is
+  // what made the fullscreen freeze undebuggable.
+  function playMedia(el) {
+    const resumed = el.play();
+    if (resumed && resumed.catch) {
+      resumed.catch((err) => {
+        console.warn(
+          `lumen: play() refused on #${el.id}:`,
+          err && `${err.name}: ${err.message}`,
+        );
+      });
+    }
+  }
 
   // Idempotent: no-op unless the document is visible and a live remote
   // video track is attached; play() on a running element is itself a
-  // no-op.
+  // no-op. The audio element is nudged along whenever it is attached.
   function recoverPlayback() {
-    if (document.visibilityState !== "visible" || !remoteStream) return;
-    const track = remoteStream.getVideoTracks()[0];
+    if (document.visibilityState !== "visible" || !videoStream) return;
+    const track = videoStream.getVideoTracks()[0];
     if (!track || track.readyState !== "live") return;
-    const resumed = video.play();
-    if (resumed && resumed.catch) resumed.catch(() => {});
+    playMedia(video);
+    const audioTrack =
+      audioEl.srcObject && audioEl.srcObject.getAudioTracks()[0];
+    if (audioTrack && audioTrack.readyState === "live") playMedia(audioEl);
   }
 
   // Rebuild the element's media pipeline from the still-live stream: the
-  // manual equivalent of what re-entering fullscreen does. Re-assigning
-  // srcObject also makes WebKit re-evaluate the autoplay policy, which
-  // admits muted play() without a user gesture. The WebRTC track itself
-  // is never touched, so the connection stays intact.
+  // manual equivalent of what re-entering fullscreen does. The WebRTC
+  // track itself is never touched, so the connection stays intact.
   function reattachStream() {
-    if (document.visibilityState !== "visible" || !remoteStream) return;
-    const track = remoteStream.getVideoTracks()[0];
+    if (document.visibilityState !== "visible" || !videoStream) return;
+    const track = videoStream.getVideoTracks()[0];
     if (!track || track.readyState !== "live") return;
     video.srcObject = null;
-    video.srcObject = remoteStream;
-    const resumed = video.play();
-    if (resumed && resumed.catch) resumed.catch(() => {});
+    video.srcObject = videoStream;
+    playMedia(video);
   }
 
-  // Detect 2: the host pipeline encodes continuously, so no decoded frame
-  // within the probe window means the element's media pipeline is stalled
-  // regardless.
+  // Detect a frozen render layer: the host pipeline encodes continuously,
+  // so no decoded frame within the probe window means the element's media
+  // pipeline stalled regardless of what `paused` claims. Rebuild is
+  // bounded and re-probed, so a pathological stream cannot loop here.
   let frameProbeTimer = 0;
+  let frameReattachTries = 0;
   function probeFrameProgress() {
-    if (!("requestVideoFrameCallback" in video) || !remoteStream) return;
+    if (!("requestVideoFrameCallback" in video) || !videoStream) return;
     let advanced = false;
     video.requestVideoFrameCallback(() => {
       advanced = true;
     });
     clearTimeout(frameProbeTimer);
     frameProbeTimer = setTimeout(() => {
-      if (!advanced) reattachStream();
+      if (advanced) {
+        frameReattachTries = 0;
+        return;
+      }
+      if (frameReattachTries >= 2) return; // pathological: stop hammering
+      frameReattachTries++;
+      reattachStream();
+      probeFrameProgress();
     }, 600);
   }
 
-  // Safari fires the transition events before its fullscreen/rotation
-  // animation has settled and pauses the element during the animation, so
-  // an immediate play() can be swallowed; retry on one shared timer — at
+  // WebKit fires the transition events before its fullscreen/rotation
+  // animation settles and pauses the element only after the event, so an
+  // immediate play() can be swallowed; retry on one shared timer — at
   // most one retry chain at a time, no listener or timer leaks. Once the
   // element reports playing, verify frames actually advance.
   let playbackRecoverTimer = 0;
   function schedulePlaybackRecovery() {
     if (document.visibilityState !== "visible") return;
     clearTimeout(playbackRecoverTimer);
+    clearTimeout(frameProbeTimer);
+    frameReattachTries = 0;
     recoverPlayback();
     let retries = 0;
     const retry = () => {
@@ -330,11 +365,11 @@
         if (++retries < 5) {
           playbackRecoverTimer = setTimeout(retry, 250);
         } else {
-          // Every play() was refused: iOS does exactly this to an element
-          // that played through its native fullscreen until a new user
-          // gesture. Re-attaching re-evaluates the autoplay policy.
+          // Still paused after the settle window: rebuild the pipeline
+          // once, then let the frame probe verify frames advance.
           playbackRecoverTimer = 0;
           reattachStream();
+          probeFrameProgress();
         }
       } else {
         playbackRecoverTimer = 0;
@@ -344,9 +379,12 @@
     playbackRecoverTimer = setTimeout(retry, 250);
   }
 
-  // Unmuted playback after an iOS fullscreen exit still needs a user
-  // gesture; any later tap re-arms the idempotent recovery.
-  document.addEventListener("pointerdown", recoverPlayback, { passive: true });
+  // Safety net, not the mechanism: with the video element permanently
+  // muted recovery is deterministic, but any later gesture still re-arms
+  // the idempotent resume for whatever edge case paused the OS pipeline.
+  document.addEventListener("pointerdown", recoverPlayback, {
+    passive: true,
+  });
 
   /* ---------------- wake lock ---------------- */
 
@@ -421,6 +459,7 @@
   let ws = null;
   let pc = null;
   let remoteStream = null;
+  let videoStream = null; // video-track-only view; what the <video> plays
   let reconnectTimer = null;
   let reconnectDelay = 1000;
   let terminal = false; // session gone: invalid token, declined, host ended
@@ -527,9 +566,12 @@
       remoteStream.getTracks().forEach((track) => track.stop());
       remoteStream = null;
       video.srcObject = null;
+      videoStream = null;
+      audioEl.srcObject = null;
     }
     btnMute.hidden = true;
-    video.muted = true; // next autoplay window starts muted again
+    video.muted = true; // the fullscreen element stays permanently muted
+    audioEl.muted = true; // next autoplay window starts muted again
     statsLine.hidden = true;
   }
 
@@ -583,14 +625,24 @@
 
     pc.ontrack = (event) => {
       remoteStream = event.streams[0] || new MediaStream([event.track]);
-      video.srcObject = remoteStream;
-      if (event.track.kind === "audio") {
+      if (event.track.kind === "video") {
+        // Video-only on the fullscreen element: an audible audio track
+        // here is what makes iOS refuse play() after the native
+        // fullscreen exit until a fresh user gesture arrives.
+        videoStream = new MediaStream([event.track]);
+        video.srcObject = videoStream;
+        video.muted = true; // permanently: audio output is audioEl's job
+        playMedia(video);
+      } else {
+        // Audio on its own element, which never enters fullscreen and so
+        // never loses its playback allowance mid-session. It starts muted
+        // (autoplay policy); the mute button unmutes it inside a gesture.
+        audioEl.srcObject = new MediaStream([event.track]);
+        audioEl.muted = true;
         btnMute.hidden = false; // autoplay starts muted; let the viewer unmute
         syncMuteButton();
+        playMedia(audioEl);
       }
-      video.play().catch(() => {
-        /* autoplay is allowed: muted + playsinline */
-      });
     };
 
     pc.onicecandidate = (event) => {
@@ -717,7 +769,7 @@
   btnFullscreen.addEventListener("click", toggleFullscreen);
 
   function syncMuteButton() {
-    const muted = video.muted;
+    const muted = audioEl.muted; // the video element is never unmuted
     setHidden(iconMuted, !muted);
     setHidden(iconUnmuted, muted);
     btnMute.setAttribute("aria-label", muted ? t("unmute") : t("mute"));
@@ -725,10 +777,11 @@
   }
 
   btnMute.addEventListener("click", () => {
-    video.muted = !video.muted;
+    audioEl.muted = !audioEl.muted;
     // Safari may pause when the muted flag flips mid-playback; nudge it.
-    const resumed = video.play();
-    if (resumed && resumed.catch) resumed.catch(() => {});
+    // Flipping to audible inside this gesture is also what admits the
+    // autoplay policy to unmuted playback.
+    playMedia(audioEl);
     syncMuteButton();
     pokeHud();
   });

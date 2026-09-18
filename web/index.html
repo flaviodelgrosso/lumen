@@ -17,6 +17,10 @@
   <body>
     <main id="stage">
       <video id="screen" autoplay playsinline muted></video>
+      <!-- Audio rides its own element: the fullscreen video element stays
+           permanently muted so iOS never gates its play() behind a fresh
+           user gesture after the native fullscreen round-trip. -->
+      <audio id="screen-audio" autoplay muted></audio>
 
       <div id="overlay" hidden>
         <div id="overlay-card">
