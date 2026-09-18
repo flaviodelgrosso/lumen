@@ -1,0 +1,77 @@
+[workspace]
+resolver = "2"
+members = [
+  "lumen-capture",
+  "lumen-cli",
+  "lumen-core",
+  "lumen-encoder",
+  "lumen-network",
+  "lumen-server",
+  "lumen-session",
+  "lumen-webrtc",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+# workspace members
+lumen-capture = { path = "lumen-capture" }
+lumen-cli = { path = "lumen-cli" }
+lumen-core = { path = "lumen-core" }
+lumen-encoder = { path = "lumen-encoder" }
+lumen-network = { path = "lumen-network" }
+lumen-server = { path = "lumen-server" }
+lumen-session = { path = "lumen-session" }
+lumen-webrtc = { path = "lumen-webrtc" }
+
+# external
+anyhow = "1.0"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.23"
+bytes = "1.12"
+clap = { version = "4.6", features = ["derive"] }
+dialoguer = "0.12"
+futures-util = "0.3"
+getrandom = "0.4"
+local-ip-address = "0.6"
+openh264 = "0.9"
+qrcode = "0.14"
+opus = "0.4"
+rtc = "0.20"
+rust-embed = "8.12"
+# scap-vc: patched fork of scap 0.0.8 — cross-process macOS window capture
+# (upstream sizes windows via NSApp, which only sees the calling process's
+# own windows, so any other app's window gets a 0x0 SCStreamConfiguration and
+# start_capture panics) and Result-based start/stop instead of panics.
+scap = { package = "scap-vc", version = "0.1.0" }
+screencapturekit-sys = "0.2.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.53", features = [
+  "rt-multi-thread",
+  "macros",
+  "signal",
+  "sync",
+  "time",
+  "net",
+  "io-util",
+] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tower-http = { version = "0.7", features = ["fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2.5"
+webrtc = "0.20"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

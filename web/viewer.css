@@ -1,0 +1,222 @@
+:root {
+  --bg: #0b0d10;
+  --fg: #e7ecf2;
+  --muted: #8a94a3;
+  --accent: #7dd3fc;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --err: #f87171;
+  --card: rgba(20, 24, 30, 0.92);
+  --radius: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    15px/1.5 system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  /* JS pins the height to the live viewport on rotation; these are the
+     no-JS / pre-script fallbacks. */
+  height: 100%;
+  height: 100dvh;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(60% 50% at 50% 0%, rgba(125, 211, 252, 0.07), transparent),
+    var(--bg);
+}
+
+#screen {
+  width: 100%;
+  height: 100%;
+  object-fit: contain; /* preserve aspect ratio in any orientation */
+  background: #000;
+  display: none;
+}
+
+#screen.live {
+  display: block;
+}
+
+/* ---------- overlay (waiting / errors) ---------- */
+
+#overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  --icon-size: 44px;
+  padding: 24px;
+  padding-left: max(24px, env(safe-area-inset-left));
+  padding-right: max(24px, env(safe-area-inset-right));
+}
+
+#overlay[hidden] {
+  display: none;
+}
+
+#overlay-card {
+  max-width: 420px;
+  text-align: center;
+  background: var(--card);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius);
+  padding: 28px 26px calc(28px + env(safe-area-inset-bottom));
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+#overlay-icon {
+  width: var(--icon-size);
+  height: var(--icon-size);
+  margin: 0 auto 14px;
+  border-radius: 50%;
+  border: 3px solid rgba(125, 211, 252, 0.25);
+  border-top-color: var(--accent);
+  animation: spin 1s linear infinite;
+}
+
+#overlay-icon.done,
+#overlay-icon.error {
+  animation: none;
+  border: none;
+  font-size: calc(var(--icon-size) - 4px);
+  line-height: var(--icon-size);
+}
+
+#overlay-title {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
+}
+
+#overlay-message {
+  margin: 0;
+  color: var(--muted);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- HUD ---------- */
+
+#hud {
+  position: absolute;
+  top: calc(10px + env(safe-area-inset-top));
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 12px;
+  padding-left: max(12px, env(safe-area-inset-left));
+  padding-right: max(12px, env(safe-area-inset-right));
+  pointer-events: none;
+  opacity: 0.92;
+  transition: opacity 0.4s ease;
+}
+
+#hud.faded {
+  opacity: 0;
+}
+
+#status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--card);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+#status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+#status-dot.live {
+  background: var(--ok);
+}
+
+#status-dot.bad {
+  background: var(--err);
+}
+
+#hud-actions {
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+#hud-actions button {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--card);
+  color: var(--fg);
+  font-size: 17px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+#hud-actions button:active {
+  transform: scale(0.94);
+}
+
+#hud-actions button.active {
+  border-color: rgba(125, 211, 252, 0.5);
+  color: var(--accent);
+}
+
+@media (max-width: 480px) {
+  #overlay-card {
+    padding: 22px 18px calc(22px + env(safe-area-inset-bottom));
+  }
+}
+
+/* Compact layout for short viewports (phones in landscape). */
+@media (orientation: landscape) and (max-height: 560px) {
+  #overlay {
+    --icon-size: 32px;
+  }
+
+  #overlay-card {
+    padding: 16px 20px calc(16px + env(safe-area-inset-bottom));
+  }
+
+  #overlay-title {
+    font-size: 17px;
+  }
+
+  #hud {
+    top: calc(8px + env(safe-area-inset-top));
+  }
+}

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no"
+    />
+    <meta name="theme-color" content="#0b0d10" />
+    <title>Lumen — Live Screen</title>
+    <link rel="stylesheet" href="/viewer.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%237dd3fc'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <main id="stage">
+      <video id="screen" autoplay playsinline muted></video>
+
+      <div id="overlay" hidden>
+        <div id="overlay-card">
+          <div id="overlay-icon" aria-hidden="true"></div>
+          <h1 id="overlay-title">Lumen</h1>
+          <p id="overlay-message">Connecting…</p>
+        </div>
+      </div>
+
+      <div id="hud" hidden>
+        <span id="status-pill" role="status" aria-live="polite">
+          <span id="status-dot" aria-hidden="true"></span>
+          <span id="status-text">Connecting</span>
+        </span>
+        <div id="hud-actions">
+          <button
+            id="btn-mute"
+            type="button"
+            hidden
+            aria-label="Unmute"
+            aria-pressed="false"
+          >
+            🔇
+          </button>
+          <button
+            id="btn-fullscreen"
+            type="button"
+            aria-label="Toggle fullscreen"
+            aria-pressed="false"
+          >
+            ⛶
+          </button>
+          <button id="btn-reconnect" type="button" aria-label="Reconnect">↻</button>
+        </div>
+      </div>
+    </main>
+
+    <script src="/viewer.js"></script>
+  </body>
+</html>

@@ -1,0 +1,32 @@
+[package]
+name = "lumen-server"
+description = "Axum HTTP/WebSocket server and embedded viewer for Lumen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+lumen-core.workspace = true
+lumen-session.workspace = true
+lumen-webrtc.workspace = true
+rust-embed.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+tokio-tungstenite = "0.26"
+
+[lints]
+workspace = true

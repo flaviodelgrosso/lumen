@@ -1,0 +1,15 @@
+[package]
+name = "lumen-core"
+description = "Shared domain, config, media and error types for Lumen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
