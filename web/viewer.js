@@ -146,7 +146,8 @@
     openSettings(settings.hidden);
   });
   document.addEventListener("click", (event) => {
-    if (!settings.hidden && !settings.contains(event.target)) openSettings(false);
+    if (!settings.hidden && !settings.contains(event.target))
+      openSettings(false);
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !settings.hidden) openSettings(false);
@@ -160,7 +161,11 @@
   function renderStatus() {
     statusText.textContent = t(currentStatus.key);
     statusDot.className =
-      currentStatus.kind === "live" ? "live" : currentStatus.kind === "bad" ? "bad" : "";
+      currentStatus.kind === "live"
+        ? "live"
+        : currentStatus.kind === "bad"
+          ? "bad"
+          : "";
   }
 
   function setStatus(key, kind) {
@@ -171,7 +176,8 @@
   function renderOverlay() {
     if (!currentOverlay) return;
     overlayTitle.textContent = t(currentOverlay.titleKey);
-    overlayMessage.textContent = currentOverlay.rawMessage || t(currentOverlay.msgKey);
+    overlayMessage.textContent =
+      currentOverlay.rawMessage || t(currentOverlay.msgKey);
     const mode = currentOverlay.mode;
     overlayIcon.className = mode === "error" ? "error" : "";
     setHidden(glyphErr, mode !== "error");
@@ -232,14 +238,115 @@
     pokeHud();
   }
 
-  window.addEventListener("resize", onViewportChange);
+  let resizeRecoverTimer = 0;
+  window.addEventListener("resize", () => {
+    onViewportChange();
+    // Maximize/restore and window drags fire resize bursts; recover once
+    // the layout has settled instead of hammering play() on every pixel.
+    clearTimeout(resizeRecoverTimer);
+    resizeRecoverTimer = setTimeout(schedulePlaybackRecovery, 300);
+  });
   window.addEventListener("orientationchange", () => {
     onViewportChange();
+    schedulePlaybackRecovery();
     // iOS settles the layout viewport only after the rotation animation.
     setTimeout(fitViewport, 250);
     setTimeout(fitViewport, 600);
   });
   fitViewport();
+
+  /* ---------------- playback recovery ---------------- */
+
+  // Three distinct failure modes freeze the viewer around fullscreen,
+  // window maximize/restore or visibility transitions:
+  //  1. iOS Safari pauses the <video> (its native fullscreen exit does
+  //     this by design) and `autoplay` never re-fires for an OS pause.
+  //  2. The element keeps claiming "playing" while its render layer is
+  //     frozen (WebKit/Chromium bug around fullscreen and window zoom
+  //     transitions); play() is a no-op there.
+  //  3. iOS refuses programmatic play() — even muted — for an element
+  //     that played through its native fullscreen, until a new user
+  //     gesture arrives.
+  // recoverPlayback() covers 1, probeFrameProgress() detects 2, and a
+  // refused retry chain escalates to reattachStream(), which covers 2
+  // and 3 for muted playback; unmuted audio still waits for the next tap.
+
+  // Idempotent: no-op unless the document is visible and a live remote
+  // video track is attached; play() on a running element is itself a
+  // no-op.
+  function recoverPlayback() {
+    if (document.visibilityState !== "visible" || !remoteStream) return;
+    const track = remoteStream.getVideoTracks()[0];
+    if (!track || track.readyState !== "live") return;
+    const resumed = video.play();
+    if (resumed && resumed.catch) resumed.catch(() => {});
+  }
+
+  // Rebuild the element's media pipeline from the still-live stream: the
+  // manual equivalent of what re-entering fullscreen does. Re-assigning
+  // srcObject also makes WebKit re-evaluate the autoplay policy, which
+  // admits muted play() without a user gesture. The WebRTC track itself
+  // is never touched, so the connection stays intact.
+  function reattachStream() {
+    if (document.visibilityState !== "visible" || !remoteStream) return;
+    const track = remoteStream.getVideoTracks()[0];
+    if (!track || track.readyState !== "live") return;
+    video.srcObject = null;
+    video.srcObject = remoteStream;
+    const resumed = video.play();
+    if (resumed && resumed.catch) resumed.catch(() => {});
+  }
+
+  // Detect 2: the host pipeline encodes continuously, so no decoded frame
+  // within the probe window means the element's media pipeline is stalled
+  // regardless.
+  let frameProbeTimer = 0;
+  function probeFrameProgress() {
+    if (!("requestVideoFrameCallback" in video) || !remoteStream) return;
+    let advanced = false;
+    video.requestVideoFrameCallback(() => {
+      advanced = true;
+    });
+    clearTimeout(frameProbeTimer);
+    frameProbeTimer = setTimeout(() => {
+      if (!advanced) reattachStream();
+    }, 600);
+  }
+
+  // Safari fires the transition events before its fullscreen/rotation
+  // animation has settled and pauses the element during the animation, so
+  // an immediate play() can be swallowed; retry on one shared timer — at
+  // most one retry chain at a time, no listener or timer leaks. Once the
+  // element reports playing, verify frames actually advance.
+  let playbackRecoverTimer = 0;
+  function schedulePlaybackRecovery() {
+    if (document.visibilityState !== "visible") return;
+    clearTimeout(playbackRecoverTimer);
+    recoverPlayback();
+    let retries = 0;
+    const retry = () => {
+      recoverPlayback();
+      if (video.paused) {
+        if (++retries < 5) {
+          playbackRecoverTimer = setTimeout(retry, 250);
+        } else {
+          // Every play() was refused: iOS does exactly this to an element
+          // that played through its native fullscreen until a new user
+          // gesture. Re-attaching re-evaluates the autoplay policy.
+          playbackRecoverTimer = 0;
+          reattachStream();
+        }
+      } else {
+        playbackRecoverTimer = 0;
+        probeFrameProgress();
+      }
+    };
+    playbackRecoverTimer = setTimeout(retry, 250);
+  }
+
+  // Unmuted playback after an iOS fullscreen exit still needs a user
+  // gesture; any later tap re-arms the idempotent recovery.
+  document.addEventListener("pointerdown", recoverPlayback, { passive: true });
 
   /* ---------------- wake lock ---------------- */
 
@@ -281,7 +388,8 @@
       let rtt = null;
       report.forEach((entry) => {
         if (entry.type === "inbound-rtp" && entry.kind === "video") {
-          if (typeof entry.framesPerSecond === "number") fps = entry.framesPerSecond;
+          if (typeof entry.framesPerSecond === "number")
+            fps = entry.framesPerSecond;
           width = entry.frameWidth || width;
           height = entry.frameHeight || height;
         } else if (
@@ -295,8 +403,11 @@
       const parts = [];
       if (typeof fps === "number") parts.push(`${Math.round(fps)} fps`);
       if (width && height) parts.push(`${width}×${height}`);
-      if (typeof rtt === "number") parts.push(`RTT ${Math.round(rtt * 1000)} ms`);
-      statsLine.textContent = parts.length ? parts.join(" · ") : t("statsNoData");
+      if (typeof rtt === "number")
+        parts.push(`RTT ${Math.round(rtt * 1000)} ms`);
+      statsLine.textContent = parts.length
+        ? parts.join(" · ")
+        : t("statsNoData");
       statsLine.hidden = false;
     } catch {
       statsLine.hidden = true;
@@ -542,7 +653,10 @@
     const on = Boolean(fullscreenTarget());
     btnFullscreen.classList.toggle("active", on);
     btnFullscreen.setAttribute("aria-pressed", on ? "true" : "false");
-    btnFullscreen.setAttribute("aria-label", on ? t("exitFullscreen") : t("fullscreen"));
+    btnFullscreen.setAttribute(
+      "aria-label",
+      on ? t("exitFullscreen") : t("fullscreen"),
+    );
     setHidden(iconFsEnter, on);
     setHidden(iconFsExit, !on);
     pokeHud();
@@ -551,7 +665,8 @@
   function toggleFullscreen() {
     if (fullscreenTarget()) {
       if (video.webkitDisplayingFullscreen) {
-        const exitLegacy = video.webkitExitFullscreen || video.webkitExitFullScreen;
+        const exitLegacy =
+          video.webkitExitFullscreen || video.webkitExitFullScreen;
         if (exitLegacy) exitLegacy.call(video);
         return;
       }
@@ -582,12 +697,21 @@
     }
   }
 
+  // Fullscreen transitions also re-fit the viewport (iOS may not fire
+  // resize when the inline player comes back) and re-arm playback: iOS
+  // pauses the element around its native fullscreen exit.
+  function onFullscreenTransition() {
+    syncFullscreenButton();
+    onViewportChange();
+    schedulePlaybackRecovery();
+  }
+
   ["fullscreenchange", "webkitfullscreenchange"].forEach((type) =>
-    document.addEventListener(type, syncFullscreenButton),
+    document.addEventListener(type, onFullscreenTransition),
   );
   // iOS fires the legacy pair on the video element instead.
   ["webkitbeginfullscreen", "webkitendfullscreen"].forEach((type) =>
-    video.addEventListener(type, syncFullscreenButton),
+    video.addEventListener(type, onFullscreenTransition),
   );
 
   btnFullscreen.addEventListener("click", toggleFullscreen);
@@ -626,11 +750,13 @@
   });
 
   // Resume signaling when the tab becomes visible again after a hard drop,
-  // and re-arm the wake lock the browser dropped with the visibility change.
+  // re-arm the wake lock the browser dropped with the visibility change,
+  // and resume playback the OS paused while the page was hidden.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") return;
     if (!terminal && !ws) connect();
     if (liveState) acquireWakeLock();
+    schedulePlaybackRecovery();
   });
 
   /* ---------------- boot ---------------- */
