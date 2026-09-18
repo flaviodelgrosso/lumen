@@ -1,0 +1,19 @@
+[workspace]
+git_only = true
+release_always = false
+
+[[package]]
+name = "lumen-cli"
+changelog_path = "./CHANGELOG.md"
+git_tag_name = "v{{ version }}"
+git_release_enable = true
+
+changelog_include = [
+  "lumen-capture",
+  "lumen-core",
+  "lumen-encoder",
+  "lumen-network",
+  "lumen-server",
+  "lumen-session",
+  "lumen-webrtc",
+]
