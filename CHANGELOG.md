@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- repair remaining iOS video freeze after exiting native fullscreen/maximized mode
+- prevent WebRTC viewer video from freezing after iOS native fullscreen transitions
+- resume viewer playback after fullscreen, rotation and window zoom
+- change default fps to 60
+- remove scap and drive native capture backends directly
 - change default fps to 60
 - remove scap and drives native capture backends directly
 
