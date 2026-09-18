@@ -1,7 +1,7 @@
 <!-- prettier-ignore -->
 <div align="center">
 
-# 🔴 Lumen
+# 📽️ Lumen
 
 **Stream your screen — with system audio on macOS — to any browser on your LAN.**
 
