@@ -1,8 +1,10 @@
 # 🔴 Lumen
 
-**Stream your Mac's screen — with system audio — to any browser on your LAN.**
+**Stream your screen — with system audio on macOS — to any browser on your LAN.**
 
 No viewer app. No FFmpeg. No account. Run one command, scan a QR code, watch and listen.
+
+Works on **macOS 13+** (ScreenCaptureKit) and **Windows 10 1903+** (Windows.Graphics.Capture, video-only — see [Windows](#windows)).
 
 ```
 scap (video)    → openh264 (H.264 encode) ┐
@@ -30,9 +32,10 @@ SCK audio (PCM) → libopus  (Opus encode)  ┘
 | Requirement                     | Notes                                                                                                                                         |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | **macOS 13+**                   | Apple Silicon or Intel. Capture uses the native ScreenCaptureKit API via `scap`; system audio uses a dedicated ScreenCaptureKit audio stream. |
+| **Windows 10 1903+ / 11**       | x64. Display and window capture use Windows.Graphics.Capture (WGC) via `scap`. No system audio — `lumen` streams video only. See [Windows](#windows). |
 | **Rust 1.85+**                  | Edition 2024, needed to build.                                                                                                                |
-| **CMake**                       | The `opus` crate compiles a bundled `libopus` at build time. Install with `brew install cmake` if missing.                                    |
-| **Screen Recording permission** | See [below](#macos-screen-recording-permission).                                                                                              |
+| **CMake**                       | The `opus` crate compiles a bundled `libopus` at build time. Install with `brew install cmake` if missing (macOS).                            |
+| **Screen Recording permission** | macOS only — see [below](#macos-screen-recording-permission). Windows needs no permission grant; see [Windows](#windows).                     |
 
 ### macOS Screen Recording permission
 
@@ -41,6 +44,28 @@ SCK audio (PCM) → libopus  (Opus encode)  ┘
 > **System Settings → Privacy & Security → Screen Recording**
 
 The first `lumen serve` / `lumen displays` run registers the request — toggle your terminal on, then **restart it** and run again. Without the permission, `lumen` exits with a clear message instead of crashing.
+
+### Windows
+
+Windows needs **no per-app screen-recording permission**: Windows.Graphics.Capture grants capture to any ordinary process. The realistic blockers are different:
+
+- **Elevated windows** — a non-elevated `lumen` cannot capture windows running as administrator (Task Manager, elevated terminals, …). Close the elevated target or run `lumen` from an elevated terminal.
+- **Group policy / Windows Defender Firewall** — enterprise policy can disable screen capture entirely; the firewall gates the LAN/multicast traffic like any server app (allow `lumen` on the current network profile).
+- **No system audio** — WGC captures video only. `lumen serve` detects the missing backend, logs `system audio is not available here; streaming video only`, prints `Audio: unavailable — video only` in the banner, and starts normally. `--no-audio` is never required on Windows.
+
+#### Runtime verification status (manual checklist for a real Windows host)
+
+The Windows build is verified in CI (`cargo check`/`test`/`clippy`/`build` on a `windows-latest` runner). CI cannot exercise screen capture, so these behaviors are wired to the `scap`/`windows-capture` (WGC) backend but **not yet validated on hardware** — confirm each on a real Windows 10/11 machine before trusting them:
+
+1. `lumen displays` lists monitors and `lumen windows` lists app windows; ids round-trip into `--display` / `--window` (scap derives target ids from `HMONITOR`/`HWND` truncated to `u32` — verify the printed id selects the intended target).
+2. `lumen serve` captures the primary display and a non-primary display at **100%, 125% and 150% display scaling** (scap sizes WGC output from `DEVMODE`/`GetWindowRect` × effective DPI; the frame stride may also exceed the logical width — Lumen keeps the frame's logical size and repacks padded rows, but the crop math is scap's).
+3. Window capture of a normal (non-elevated) window, incl. a window on a secondary monitor with different DPI.
+4. A capture start failure (e.g. the window vanishes mid-start) surfaces as `capture failed to start: …` — scap's Windows engine still unwraps internally, so a panic there would be an upstream bug to report, not a Lumen error path.
+5. The banner shows `Audio: unavailable — video only`, and viewers play video with no audio track.
+6. Chromium viewers connect over mDNS: on first run Windows asks to allow `lumen` through the firewall; accept it on the **Private** network profile, then verify a Chrome/Edge viewer on another device connects (a VPN/virtual adapter without multicast routing fails the same way as on macOS — see [Troubleshooting](#troubleshooting)).
+7. Ctrl+C shuts the server down cleanly (no orphaned `lumen.exe`).
+
+If any item fails on hardware, the fix belongs either in the platform-gated code in `lumen-capture` or upstream in `scap-vc`; the macOS implementation is unaffected either way.
 
 ---
 
@@ -91,7 +116,7 @@ lumen --help
 
 ### 🎥 Capture
 
-`scap` grabs BGRA frames from ScreenCaptureKit at the target FPS. The pipeline keeps only the latest frame — a slow encoder never builds a queue. Displays larger than the encoder's 3840×2160 ceiling (e.g. a 3456×2234 Retina panel) are scaled down by ScreenCaptureKit itself — zero CPU cost — to the nearest encodable size, aspect ratio preserved.
+`scap` grabs BGRA frames at the target FPS — from ScreenCaptureKit on macOS and from Windows.Graphics.Capture on Windows. The pipeline keeps only the latest frame — a slow encoder never builds a queue. Displays larger than the encoder's 3840×2160 ceiling (e.g. a 3456×2234 Retina panel) are scaled down by ScreenCaptureKit itself — zero CPU cost — to the nearest encodable size, aspect ratio preserved. On Windows, frames whose D3D11 row pitch exceeds the logical width keep their logical size; the encoder repacks padded rows.
 
 ### 🎞️ Encode
 
@@ -99,7 +124,7 @@ lumen --help
 
 ### 🔊 Audio
 
-A dedicated audio-only ScreenCaptureKit stream captures system audio and normalizes it to 48 kHz stereo `f32` PCM for Opus. `libopus` (bundled via the `opus` crate) encodes 20 ms packets at 128 kbps, riding a second WebRTC track in the same `MediaStream`. Browsers block autoplaying sound, so the viewer starts **muted** — use the Unmute button in the HUD to enable sound.
+A dedicated audio-only ScreenCaptureKit stream captures system audio on macOS and normalizes it to 48 kHz stereo `f32` PCM for Opus. `libopus` (bundled via the `opus` crate) encodes 20 ms packets at 128 kbps, riding a second WebRTC track in the same `MediaStream`. Browsers block autoplaying sound, so the viewer starts **muted** — use the Unmute button in the HUD to enable sound. On Windows there is no system-audio backend; `lumen` falls back to a video-only `MediaStream` automatically.
 
 ### 📡 Stream
 
@@ -117,7 +142,7 @@ One `webrtc-rs` peer connection per viewer (negotiated `recvonly` answer from th
 - ✅ New viewers are **approved interactively** in the terminal (browser name + device detected from the user agent), unless `--auto-accept` is set.
 - 👢 The host can list (`GET /api/peers?token=…`) and **kick** (`POST /api/peers/<id>/disconnect?token=…`) viewers at any time.
 - 🌐 Traffic is **LAN-only**. The HTTP server is plain `http://` (so no TLS certificate warnings), but the media itself — video and audio — is SRTP-encrypted end to end. Do not expose the port beyond your LAN.
-- 🔈 **Audio is everything your Mac plays** — approved viewers hear system audio (notifications, calls, music). Use `--no-audio` for video-only.
+- 🔈 **Audio is everything your computer plays** (macOS) — approved viewers hear system audio (notifications, calls, music). Use `--no-audio` for video-only; Windows is video-only already.
 - 🧭 ICE candidates are restricted to LAN; mDNS `.local` candidates are resolved in query mode. A loopback socket is bound only for a viewer that is itself on loopback, so a LAN viewer is never pinged from `127.0.0.1`.
 
 ---
@@ -135,7 +160,7 @@ mDNS Query … timed out
 
 **Cause:** the host cannot send IPv4 multicast. Chromium browsers obfuscate their host ICE candidates as `mDNS .local` names, and `lumen` resolves them by querying `224.0.0.251:5353`. If every such send fails, the browser's candidate is dropped, no ICE pair ever forms, and LAN viewers never connect. (`lumen serve` probes this at startup and warns.)
 
-There are three likely causes, in order of likelihood:
+Likely causes, in order of likelihood (labels note the OS):
 
 <details>
 <summary><b>1. The terminal app lacks the Local Network permission (macOS 15+)</b></summary>
@@ -145,6 +170,21 @@ macOS gates multicast (and direct LAN connections) behind a privacy permission o
 > **System Settings → Privacy & Security → Local Network → enable your terminal**
 
 Then quit and reopen the terminal and run `lumen` again.
+
+</details>
+
+<details>
+<summary><b>1b. Windows Defender Firewall blocks the app (Windows)</b></summary>
+
+Windows shows a prompt the first time `lumen` sends UDP; dismissing it leaves outbound multicast blocked. Allow the binary on the current (Private) network profile:
+
+```powershell
+New-NetFirewallRule -DisplayName "lumen screen sharing" `
+  -Direction Outbound -Program "$PWD\target\release\lumen.exe" `
+  -Action Allow -Profile Private
+```
+
+Repeat after each rebuild — the rule keys on the file path.
 
 </details>
 
@@ -206,7 +246,7 @@ A capture larger than 3840×2160 that scap cannot scale (see [How It Works](#how
 
 ```
 lumen-core      shared types, config, errors
-lumen-capture   scap + ScreenCaptureKit-audio wrappers + fake sources (tests)
+lumen-capture   scap video (SCK / WGC) + SCK system-audio + fake sources (tests)
 lumen-encoder   openh264 + opus wrappers + fake encoders (tests)
 lumen-webrtc    per-viewer peer connection (video + audio tracks)
 lumen-session   token, approval, user-agent parsing
@@ -225,6 +265,16 @@ make test        # test suite
 make ci          # all of the above
 make install     # install the release binary
 ```
+
+**Windows.** The full gate runs on a `windows-latest` CI runner (check/test/clippy/release build). Off-Windows you can still type-check the pure-Rust half of the workspace for the MSVC target:
+
+```sh
+rustup target add x86_64-pc-windows-msvc
+cargo check -p lumen-core -p lumen-capture -p lumen-session -p lumen-network \
+  --all-targets --locked --target x86_64-pc-windows-msvc
+```
+
+The crates behind C toolchains (`lumen-encoder`'s `opus`, `lumen-webrtc`'s `ring`) can't cross-compile from macOS and are validated on the runner only. `windows-capture` (scap's WGC backend) is pinned to `1.4.4` in `Cargo.lock` — its `Settings::new` signature changed incompatibly in 1.5; keep the pin on `cargo update` (see the comment in `Cargo.toml`).
 
 > **Note:** `cargo clippy` may report a future-incompatibility warning for `block v0.1.6` (a transitive dependency of `scap`'s `objc` usage). It's upstream, harmless today, and not actionable in this repo.
 >

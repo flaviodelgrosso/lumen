@@ -25,7 +25,7 @@ test: ## Run all workspace tests with every feature enabled
 clippy: ## Run Clippy across the workspace with warnings treated as errors
 	$(CARGO) clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-build: ## Build all workspace targets in release mode
+build: ## Build all workspace targets in release mode with every feature enabled
 	$(CARGO) build --workspace --all-targets --all-features --release --locked
 
 ci: fmt-check check clippy test ## Run the complete workspace CI quality gate

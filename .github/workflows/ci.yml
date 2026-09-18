@@ -26,28 +26,77 @@ jobs:
       - run: make fmt-check
 
   check:
-    name: Check
-    runs-on: macos-latest
+    name: Check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-      - run: make check
+      - name: Check (macOS)
+        if: runner.os == 'macOS'
+        run: make check
+      - name: Check (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cargo check --workspace --all-targets --all-features --locked
 
   clippy:
-    name: Clippy
-    runs-on: macos-latest
+    name: Clippy (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-      - run: make clippy
+      - name: Clippy (macOS)
+        if: runner.os == 'macOS'
+        run: make clippy
+      - name: Clippy (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   test:
-    name: Test
-    runs-on: macos-latest
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
-      - run: make test
+      - name: Test (macOS)
+        if: runner.os == 'macOS'
+        run: make test
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cargo test --workspace --all-targets --all-features --locked
+
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - name: Release build (macOS)
+        if: runner.os == 'macOS'
+        run: make build
+      - name: Release build (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cargo build --workspace --all-targets --all-features --release --locked

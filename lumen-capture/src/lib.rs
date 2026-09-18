@@ -22,9 +22,39 @@ use scap::{Target, capturer::Options, capturer::Resolution, frame::Frame, frame:
 use thiserror::Error;
 
 pub mod audio;
+/// Windowed-sinc resampler used only by the macOS audio path (SCK delivers
+/// arbitrary device rates); other platforms have no system-audio backend.
+#[cfg(target_os = "macos")]
 mod resample;
 
 pub use audio::{AudioCaptureSource, FakeAudioCapture, ScapAudioCapture};
+
+/// Tail appended to [`CaptureError::PermissionDenied`] with the guidance
+/// that actually applies on the current OS.
+#[cfg(target_os = "macos")]
+const PERMISSION_HINT: &str = concat!(
+  "on macOS open System Settings \u{2192} Privacy & Security \u{2192} Screen ",
+  "Recording, enable your terminal app, then rerun lumen"
+);
+/// Windows grants capture to ordinary processes; the realistic blockers are
+/// elevated (admin) windows and enterprise screen-capture policy.
+#[cfg(target_os = "windows")]
+const PERMISSION_HINT: &str = concat!(
+  "on Windows capture is blocked for elevated (Run as administrator) windows ",
+  "and when a group policy disables screen capture; close the elevated ",
+  "target or run lumen from an elevated terminal, then rerun lumen"
+);
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const PERMISSION_HINT: &str =
+  "check your system's screen-recording privacy settings, then rerun lumen";
+
+/// Note appended to [`CaptureError::AudioNotSupported`] per OS.
+#[cfg(target_os = "macos")]
+const AUDIO_UNSUPPORTED_NOTE: &str = " (macOS 13+ required)";
+#[cfg(target_os = "windows")]
+const AUDIO_UNSUPPORTED_NOTE: &str = " (system audio capture is not implemented on Windows)";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const AUDIO_UNSUPPORTED_NOTE: &str = "";
 
 /// Errors from capture enumeration or frame delivery.
 #[derive(Debug, Error)]
@@ -33,9 +63,10 @@ pub enum CaptureError {
   #[error("screen capture is not supported on this platform")]
   NotSupported,
   /// The OS denied the screen-recording permission.
-  #[error(
-    "screen-recording permission not granted; on macOS open System Settings \u{2192} Privacy & Security \u{2192} Screen Recording, enable your terminal app, then rerun lumen"
-  )]
+  ///
+  /// The corrective guidance is chosen per OS so a Windows user never sees
+  /// macOS System Settings instructions.
+  #[error("screen-recording permission not granted; {PERMISSION_HINT}")]
   PermissionDenied,
   /// No capturable display exists.
   #[error("no capturable display found")]
@@ -53,7 +84,7 @@ pub enum CaptureError {
   #[error("window {0} not found; run `lumen windows` to list capturable windows")]
   WindowNotFound(u32),
   /// This platform/OS version cannot capture system audio.
-  #[error("system audio capture is not supported on this platform (macOS 13+ required)")]
+  #[error("system audio capture is not supported on this platform{AUDIO_UNSUPPORTED_NOTE}")]
   AudioNotSupported,
   /// The audio capture engine failed to start.
   #[error("audio capture failed to start: {0}")]
@@ -155,7 +186,11 @@ pub fn list_windows() -> Result<Vec<WindowInfo>, CaptureError> {
   )
 }
 
-/// Guard `scap` calls that abort the process when TCC denies capture.
+/// Guard `scap` calls that abort the process when the OS denies capture.
+///
+/// On macOS this covers the TCC screen-recording prompt; on Windows `scap`
+/// treats capture as always permitted (WGC has no per-app permission), so the
+/// guard reduces to the [`CaptureError::NotSupported`] check.
 pub(crate) fn require_permission() -> Result<(), CaptureError> {
   if !scap::is_supported() {
     return Err(CaptureError::NotSupported);
@@ -172,6 +207,16 @@ pub struct ScapCapture {
   dimensions: Dimensions,
   started: bool,
 }
+
+/// On Windows `scap`'s `Capturer` transitively holds a raw `HWND`/`HMONITOR`
+/// (a `*mut c_void`, hence auto-`!Send`). These are process-wide kernel
+/// handles, valid from any thread, and `windows-capture` — the backend that
+/// actually drives the capture thread — already makes this exact promise for
+/// the handles it stores (`unsafe impl Send for Window`/`Monitor`). Moving a
+/// built `Capturer` onto the pipeline's blocking thread is therefore sound.
+#[cfg(target_os = "windows")]
+#[expect(unsafe_code, reason = "raw window handles are process-wide")]
+unsafe impl Send for ScapCapture {}
 
 impl ScapCapture {
   /// Build a full-display capturer.
@@ -324,6 +369,7 @@ impl CaptureSource for ScapCapture {
 
 /// Convert a scap BGRA frame, deriving the true stride from the buffer
 /// length (scap's reported width can disagree with `bytes_per_row`).
+#[cfg(not(target_os = "windows"))]
 fn bgra_to_raw(frame: scap::frame::BGRAFrame) -> Result<RawFrame, CaptureError> {
   let height = u32::try_from(frame.height).unwrap_or(0).max(1);
   let data_len = frame.data.len();
@@ -346,6 +392,43 @@ fn bgra_to_raw(frame: scap::frame::BGRAFrame) -> Result<RawFrame, CaptureError> 
     height,
     stride: u32::try_from(row_bytes)
       .map_err(|_| CaptureError::MalformedFrame(format!("row of {row_bytes} B too wide")))?,
+    format: PixelFormat::Bgra8,
+    pixels: Bytes::from(frame.data),
+    captured_at: Instant::now(),
+  })
+}
+
+/// Windows variant: `windows-capture` hands over `RowPitch`-padded buffers
+/// whose logical size is authoritative, so the frame's own `width` is kept
+/// and the stride is derived from the buffer length. The encoder repacks
+/// padded rows; a zero-copy tight copy is avoided because padded pitches
+/// are the common case (D3D11 aligns rows).
+#[cfg(target_os = "windows")]
+fn bgra_to_raw(frame: scap::frame::BGRAFrame) -> Result<RawFrame, CaptureError> {
+  let width = u32::try_from(frame.width).unwrap_or(0);
+  let height = u32::try_from(frame.height).unwrap_or(0).max(1);
+  let data_len = frame.data.len();
+  let height_usize = usize::try_from(height).unwrap_or(1);
+  if width == 0 || data_len == 0 || data_len % height_usize != 0 {
+    return Err(CaptureError::MalformedFrame(format!(
+      "{data_len} bytes for {height} rows"
+    )));
+  }
+  let row_bytes = u32::try_from(data_len / height_usize).map_err(|_| {
+    CaptureError::MalformedFrame(format!("row of {} B too wide", data_len / height_usize))
+  })?;
+  let row_pixels = width
+    .checked_mul(4)
+    .ok_or_else(|| CaptureError::MalformedFrame(format!("width {width} too wide")))?;
+  if row_bytes < row_pixels {
+    return Err(CaptureError::MalformedFrame(format!(
+      "row pitch {row_bytes} B below width {width} px"
+    )));
+  }
+  Ok(RawFrame {
+    width,
+    height,
+    stride: row_bytes,
     format: PixelFormat::Bgra8,
     pixels: Bytes::from(frame.data),
     captured_at: Instant::now(),
@@ -464,6 +547,7 @@ mod tests {
   }
 
   #[test]
+  #[cfg(not(target_os = "windows"))]
   fn stride_is_derived_from_buffer() {
     // 4 rows of 8 bytes = 2 pixels wide despite width field saying 4.
     let f = scap::frame::BGRAFrame {
@@ -476,5 +560,90 @@ mod tests {
     assert_eq!(raw.width, 2);
     assert_eq!(raw.height, 4);
     assert_eq!(raw.stride, 8);
+  }
+
+  /// `windows-capture` hands over `RowPitch`-padded buffers; the logical
+  /// width must survive and the pitch must become the stride (the encoder
+  /// repacks padded rows).
+  #[test]
+  #[cfg(target_os = "windows")]
+  fn padded_windows_frame_keeps_logical_width() {
+    // 4 rows at pitch 12 B for a 2 px (8 B) logical width.
+    let f = scap::frame::BGRAFrame {
+      display_time: 0,
+      width: 2,
+      height: 4,
+      data: vec![7_u8; 48],
+    };
+    let raw = bgra_to_raw(f).unwrap();
+    assert_eq!(raw.width, 2);
+    assert_eq!(raw.height, 4);
+    assert_eq!(raw.stride, 12);
+  }
+
+  #[test]
+  #[cfg(target_os = "windows")]
+  fn tight_windows_pitch_round_trips() {
+    let f = scap::frame::BGRAFrame {
+      display_time: 0,
+      width: 2,
+      height: 4,
+      data: vec![7_u8; 32],
+    };
+    let raw = bgra_to_raw(f).unwrap();
+    assert_eq!(raw.width, 2);
+    assert_eq!(raw.stride, 8);
+    assert_eq!(raw.stride, raw.width * 4);
+  }
+
+  #[test]
+  #[cfg(target_os = "windows")]
+  fn windows_pitch_below_width_is_malformed() {
+    // 4 rows of 8 B cannot hold a 4 px (16 B) logical row.
+    let f = scap::frame::BGRAFrame {
+      display_time: 0,
+      width: 4,
+      height: 4,
+      data: vec![7_u8; 32],
+    };
+    assert!(matches!(
+      bgra_to_raw(f),
+      Err(CaptureError::MalformedFrame(_))
+    ));
+  }
+
+  /// A Windows user must never be told to open macOS System Settings.
+  #[test]
+  #[cfg(target_os = "windows")]
+  fn permission_error_gives_windows_guidance() {
+    let msg = CaptureError::PermissionDenied.to_string();
+    assert!(msg.contains("Windows"), "{msg}");
+    assert!(!msg.contains("macOS"), "{msg}");
+    assert!(!msg.contains("System Settings"), "{msg}");
+  }
+
+  #[test]
+  #[cfg(target_os = "windows")]
+  fn audio_not_supported_error_gives_windows_guidance() {
+    let msg = CaptureError::AudioNotSupported.to_string();
+    assert!(msg.contains("Windows"), "{msg}");
+    assert!(!msg.contains("macOS"), "{msg}");
+  }
+
+  /// The macOS guidance must stay intact (no regression from the per-OS split).
+  #[test]
+  #[cfg(target_os = "macos")]
+  fn permission_error_keeps_macos_guidance() {
+    let msg = CaptureError::PermissionDenied.to_string();
+    assert!(msg.contains("macOS"), "{msg}");
+    assert!(msg.contains("System Settings"), "{msg}");
+    assert!(msg.contains("Screen Recording"), "{msg}");
+  }
+
+  #[test]
+  #[cfg(target_os = "macos")]
+  fn audio_not_supported_error_keeps_macos_guidance() {
+    let msg = CaptureError::AudioNotSupported.to_string();
+    assert!(msg.contains("macOS 13"), "{msg}");
   }
 }
