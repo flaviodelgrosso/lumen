@@ -437,7 +437,7 @@ mod macos {
 #[cfg(target_os = "macos")]
 pub use macos::ScapAudioCapture;
 
-/// System-audio capture on platforms without a ScreenCaptureKit backend.
+/// System-audio capture on platforms without a `ScreenCaptureKit` backend.
 #[cfg(not(target_os = "macos"))]
 pub struct ScapAudioCapture;
 
@@ -505,6 +505,15 @@ mod tests {
   #[cfg(target_os = "macos")]
   use super::macos::*;
   use super::*;
+
+  /// On platforms without a system-audio backend (Windows today), the
+  /// video-only fallback in `lumen serve` depends on this exact error.
+  #[cfg(not(target_os = "macos"))]
+  #[test]
+  fn unsupported_platform_reports_audio_not_supported() {
+    let err = ScapAudioCapture::new().err().expect("stub always fails");
+    assert!(matches!(err, CaptureError::AudioNotSupported), "{err}");
+  }
 
   #[test]
   fn fake_source_emits_interleaved_frames() {

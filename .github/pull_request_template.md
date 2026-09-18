@@ -15,4 +15,5 @@
 - [ ] `cargo fmt` passes
 - [ ] `cargo clippy --all-targets -- -D warnings` passes
 - [ ] `cargo test --all-targets` passes
+- [ ] `cargo check --workspace --all-targets --all-features --locked` passes on Windows
 - [ ] `README.md` updated if user-facing behavior changed

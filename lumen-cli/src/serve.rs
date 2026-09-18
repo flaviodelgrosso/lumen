@@ -90,12 +90,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
   if let Err(source) = lumen_network::probe_multicast() {
     tracing::warn!(
       "IPv4 multicast send failed ({source}); Chromium-based viewers \
-             (mDNS-obfuscated ICE candidates) will not connect.\n\
-             On macOS 15+ this is the Local Network privacy permission: open \
-             System Settings -> Privacy & Security -> Local Network and allow \
-             your TERMINAL app (the prompt is often suppressed for binaries \
-             run from a terminal), then restart the terminal and lumen. \
-             A VPN or VM NIC without multicast routing fails the same way."
+             (mDNS-obfuscated ICE candidates) will not connect.\n{}",
+      multicast_remediation()
     );
   }
 
@@ -199,6 +195,30 @@ fn build_audio(cfg: &StreamConfig) -> Option<(Box<dyn AudioCaptureSource>, Box<d
       None
     }
   }
+}
+
+/// OS-specific corrective guidance for the multicast preflight warning; a
+/// Windows user must never be told to open macOS System Settings.
+#[cfg(target_os = "macos")]
+fn multicast_remediation() -> &'static str {
+  "On macOS 15+ this is the Local Network privacy permission: open \
+   System Settings -> Privacy & Security -> Local Network and allow \
+   your TERMINAL app (the prompt is often suppressed for binaries \
+   run from a terminal), then restart the terminal and lumen. \
+   A VPN or VM NIC without multicast routing fails the same way."
+}
+
+#[cfg(target_os = "windows")]
+fn multicast_remediation() -> &'static str {
+  "On Windows this is usually Windows Defender Firewall blocking UDP multicast \
+   for this app — allow lumen on the current network profile (see \
+   Troubleshooting in the README) — or a VPN/VM adapter without multicast \
+   routing, which fails the same way."
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn multicast_remediation() -> &'static str {
+  "A VPN or VM NIC without multicast routing fails the same way."
 }
 
 fn print_banner(
