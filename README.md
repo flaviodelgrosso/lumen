@@ -16,7 +16,7 @@
 
 </div>
 
-No viewer app. No FFmpeg. No account. Run one command, scan a QR code, watch and listen.
+No viewer app. No FFmpeg. No account. Run one command, scan a QR code, watch and listen — approvals, device management and stream stats live in a built-in host dashboard.
 
 ```
 capture (SCK / WGC)  →  openh264 (H.264) ┐
@@ -32,7 +32,8 @@ Works on **macOS 13+** (ScreenCaptureKit, video + system audio) and **Windows 10
 - **Native capture** — ScreenCaptureKit on macOS, Windows.Graphics.Capture on Windows, no FFmpeg
 - **System audio on macOS** — dedicated ScreenCaptureKit audio stream, Opus 48 kHz stereo
 - **Instant mid-session joins** — forced keyframe every 2 s and on every new viewer
-- **Interactive approval** — confirm each viewer in the terminal (browser + device detected), kick anyone at any time
+- **Host dashboard** — a lightweight `/admin` page (no frameworks): QR code, copy-link, live FPS/quality/audio, pending devices with Allow/Deny, connected devices with Disconnect
+- **Two approval surfaces** — confirm each viewer in the terminal (browser + device detected) or from the dashboard; kick anyone at any time from either
 - **LAN-only by design** — no STUN, no TURN, no internet; media is SRTP-encrypted end to end
 - **Single binary** — capture, encode, fan-out, HTTP, signaling and viewer in one `lumen` command
 
@@ -62,7 +63,7 @@ Or build in-tree: `cargo build --release` (→ `target/release/lumen`).
 lumen serve
 ```
 
-`lumen` prints a viewer URL and a QR code. Open the URL (or scan the QR) on any device on the same network, then approve the device in the terminal unless `--auto-accept` is set. The URL is `http://<lan-ip>:3131/s/<token>`; the bare `http://<lan-ip>:3131/` redirects to it for the host machine's own browser.
+`lumen` prints a viewer URL, a QR code and a **host dashboard** URL. Open the viewer URL (or scan the QR) on any device on the same network, then approve the device in the terminal or on the dashboard unless `--auto-accept` is set. The viewer URL is `http://<lan-ip>:3131/s/<token>`; the bare `http://<lan-ip>:3131/` redirects to it for the host machine's own browser. The dashboard (`http://127.0.0.1:3131/admin/<admin-token>`) is reachable **from the host machine only** unless you pass `--allow-lan-admin`.
 
 > [!IMPORTANT]
 > **macOS:** the terminal app you run `lumen` from (Terminal, iTerm, Ghostty, …) must be allowed under **System Settings → Privacy & Security → Screen Recording**. The first run registers the request — toggle your terminal on, then **restart it** and run again. Without the permission, `lumen` exits with a clear message instead of crashing.
@@ -111,6 +112,7 @@ lumen windows          # list capturable windows
 | `--quality <preset>`   | `auto`  | `low` \| `medium` \| `high` \| `auto`                                |
 | `--max-bitrate <rate>` | preset  | Ceiling, e.g. `8000k` or `2M`                                        |
 | `--auto-accept`        | off     | Admit viewers without prompting                                      |
+| `--allow-lan-admin`    | off     | Let non-localhost clients reach the host dashboard                   |
 | `--no-audio`           | off     | Stream video only (no system audio)                                  |
 | `--no-qr`              | off     | Skip the QR code                                                     |
 | `--verbose`            | off     | Debug logs + periodic `[stats]` line                                 |
@@ -143,13 +145,13 @@ One `webrtc-rs` peer connection per viewer (negotiated `recvonly` answer from th
 
 ### Serve
 
-`axum` serves the embedded viewer and a WebSocket signaling channel per viewer: `waiting → approval → offer → answer → ice`. The viewer adds auto-reconnect, double-tap fullscreen, and the mute toggle.
+`axum` serves the embedded viewer, the host dashboard and a WebSocket signaling channel per viewer: `waiting → approval → offer → answer → ice`. The viewer adds auto-reconnect, double-tap fullscreen, mute, fit/fill, mirror, screen wake lock, optional WebRTC stats (`RTCPeerConnection.getStats()`), and an EN/IT setting — all plain HTML/CSS/JS, no frameworks. The dashboard polls a single admin API (`/api/admin/state`) and drives approval/disconnect through `/api/admin/...`.
 
 ## Security
 
-- Every `serve` run generates a fresh **256-bit session token** (URL-safe base64). The viewer URL carries it, and every request — HTTP and WebSocket — must present it. Viewer and signaling routes answer `404` to unknown tokens (fail closed, no enumeration); the management API answers `403`.
-- New viewers are **approved interactively** in the terminal — browser name and device are parsed from the user agent — unless `--auto-accept` is set.
-- The host can list (`GET /api/peers?token=…`) and **kick** (`POST /api/peers/<id>/disconnect?token=…`) viewers at any time.
+- Every `serve` run generates two fresh **256-bit tokens** (URL-safe base64): a **viewer token** carried by the viewer URL and an **admin token** carried by the dashboard URL. Viewer and signaling routes answer `404` to unknown viewer tokens; admin routes answer `404` to missing or wrong admin tokens (fail closed, no enumeration) and `403` when the client is not on localhost. A viewer token never reaches an admin endpoint.
+- The admin surface (`/admin/<admin-token>`, `/api/admin/*`) is **localhost-only by default**; `--allow-lan-admin` extends it to the LAN. Admin clients can see the pending queue, **Allow/Deny** viewers (`POST /api/admin/pending/<id>/allow|deny`), and **kick** connected ones (`POST /api/admin/peers/<id>/disconnect`).
+- New viewers are approved on the **terminal prompt or the dashboard** (browser name and device are parsed from the user agent) — first responder wins — unless `--auto-accept` is set. Approval is fail-closed: a saturated pending queue denies immediately, and non-interactive runs without a dashboard decision never leak a peer through.
 - Traffic is **LAN-only**: ICE is restricted to LAN addresses, mDNS `.local` candidates are resolved in query mode, and a loopback socket is bound only for a viewer that is itself on loopback. The HTTP server is plain `http://` (no TLS certificate warnings), but the media itself — video and audio — is SRTP-encrypted end to end. Do not expose the port beyond your LAN.
 
 > [!WARNING]

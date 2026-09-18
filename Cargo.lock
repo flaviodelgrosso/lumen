@@ -1704,6 +1704,7 @@ dependencies = [
  "lumen-core",
  "lumen-session",
  "lumen-webrtc",
+ "qrcode",
  "rust-embed",
  "serde",
  "serde_json",

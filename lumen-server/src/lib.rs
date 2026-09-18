@@ -4,8 +4,10 @@
 //! Media never crosses the WebSocket — video and audio flow through
 //! WebRTC. The socket only carries session state and SDP/ICE exchange.
 
+use std::fmt::Write as _;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::{
@@ -19,10 +21,10 @@ use axum::{
   routing::{get, post},
 };
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
-use lumen_core::{EncodedAudioFrame, EncodedFrame};
+use lumen_core::{EncodedAudioFrame, EncodedFrame, PipelineStats};
 use lumen_session::{
-  AuthDecision, Authorizer, HostMessage, PeerId, PeerInfo, PeerRegistry, SessionToken,
-  ViewerMessage,
+  ApprovalQueue, AuthDecision, Authorizer, HostMessage, PeerId, PeerInfo, PeerRegistry,
+  SessionToken, ViewerMessage, describe_user_agent,
 };
 use lumen_webrtc::{Peer, PeerEvent};
 use rust_embed::RustEmbed;
@@ -72,15 +74,43 @@ fn asset_response(name: &str) -> Response {
   }
 }
 
+/// Static description of the running capture, surfaced on the admin
+/// dashboard (source, quality, and the canonical viewer link).
+#[derive(Clone, Debug)]
+pub struct StreamInfo {
+  /// Human-readable capture source (e.g. `Built-in Retina Display`).
+  pub source_label: String,
+  /// Captured width in pixels.
+  pub width: u32,
+  /// Captured height in pixels.
+  pub height: u32,
+  /// Target capture/encode frame rate.
+  pub target_fps: u32,
+  /// Quality preset name (`auto`, `low`, …).
+  pub quality: String,
+  /// Effective encoder bitrate, human-readable (`8.0M` style).
+  pub bitrate_label: String,
+  /// Audio description (`Opus 128k stereo`, `off`, `unavailable`).
+  pub audio_label: String,
+  /// Canonical viewer URL (LAN address, includes the viewer token).
+  pub viewer_url: String,
+}
+
 /// Runtime wiring the server needs from the orchestrator.
 pub struct ServerConfig {
   /// TCP port to bind (all interfaces).
   pub port: u16,
-  /// Secret session token for this `serve` run.
+  /// Secret viewer token for this `serve` run.
   pub token: SessionToken,
+  /// Secret admin token: grants the dashboard and `/api/admin/*`.
+  pub admin_token: SessionToken,
+  /// Allow non-localhost clients on the admin surface (default off).
+  pub admin_allow_lan: bool,
   /// Host approval channel for new viewers.
   pub authorizer: Authorizer,
-  /// Live peer registry (shared with the CLI for listing/kicking).
+  /// Shared approval pool polled by the admin dashboard.
+  pub approvals: ApprovalQueue,
+  /// Live peer registry (shared with the admin surface for listing/kicking).
   pub registry: Arc<PeerRegistry>,
   /// Shared encoded-video fan-out; one encoder serves all peers.
   pub frames: broadcast::Sender<Arc<EncodedFrame>>,
@@ -92,6 +122,10 @@ pub struct ServerConfig {
   pub shutdown: CancellationToken,
   /// Local UDP addresses for ICE (empty = `0.0.0.0:0`, all interfaces).
   pub webrtc_bind: Vec<String>,
+  /// Capture description for the admin dashboard.
+  pub stream: StreamInfo,
+  /// Live pipeline counters (fps sampling for the admin dashboard).
+  pub stats: Arc<PipelineStats>,
 }
 
 /// A running server.
@@ -134,12 +168,18 @@ pub async fn spawn_server(cfg: ServerConfig) -> Result<ServerHandle, ServerError
 
   let state = Arc::new(AppState {
     token: cfg.token,
+    admin_token: cfg.admin_token,
+    admin_allow_lan: cfg.admin_allow_lan,
     authorizer: cfg.authorizer,
+    approvals: cfg.approvals,
     registry: cfg.registry,
     frames: cfg.frames,
     audio: cfg.audio,
     keyframe_requests: cfg.keyframe_requests,
     webrtc_bind: cfg.webrtc_bind,
+    stream: cfg.stream,
+    stats: cfg.stats,
+    fps_sample: Mutex::new(None),
   });
 
   let app = build_router(state);
@@ -158,24 +198,50 @@ pub async fn spawn_server(cfg: ServerConfig) -> Result<ServerHandle, ServerError
 
 struct AppState {
   token: SessionToken,
+  admin_token: SessionToken,
+  admin_allow_lan: bool,
   authorizer: Authorizer,
+  approvals: ApprovalQueue,
   registry: Arc<PeerRegistry>,
   frames: broadcast::Sender<Arc<EncodedFrame>>,
   audio: Option<broadcast::Sender<Arc<EncodedAudioFrame>>>,
   keyframe_requests: mpsc::Sender<()>,
   webrtc_bind: Vec<String>,
+  stream: StreamInfo,
+  stats: Arc<PipelineStats>,
+  /// Last admin-status sample: (instant, captured, encoded, audio packets).
+  fps_sample: Mutex<Option<(Instant, u64, u64, u64)>>,
 }
+
 #[derive(Deserialize)]
 struct TokenQuery {
   token: Option<String>,
 }
 
-#[derive(Serialize)]
-struct PeerView {
-  id: String,
-  address: Option<IpAddr>,
-  user_agent: Option<String>,
-  since_secs: u64,
+/// (capture fps, encoded fps) since the previous admin poll; `None` until
+/// a second sample exists.
+impl AppState {
+  #[expect(
+    clippy::cast_precision_loss,
+    reason = "displayed fps rates; counter deltas stay far below 2^52"
+  )]
+  fn sample_fps(&self) -> Option<(f64, f64)> {
+    let captured = self.stats.captured.load(Ordering::Relaxed);
+    let encoded = self.stats.encoded.load(Ordering::Relaxed);
+    let audio = self.stats.audio_encoded.load(Ordering::Relaxed);
+    let now = Instant::now();
+    let mut last = self.fps_sample.lock().ok()?;
+    let prev = last.replace((now, captured, encoded, audio));
+    let (then, p_captured, p_encoded, _) = prev?;
+    let elapsed = now.duration_since(then).as_secs_f64();
+    if elapsed < 0.25 {
+      return None; // too soon for a meaningful rate
+    }
+    Some((
+      captured.saturating_sub(p_captured) as f64 / elapsed,
+      encoded.saturating_sub(p_encoded) as f64 / elapsed,
+    ))
+  }
 }
 
 fn build_router(state: Arc<AppState>) -> Router {
@@ -187,13 +253,19 @@ fn build_router(state: Arc<AppState>) -> Router {
       get(|| async { asset_response("viewer.css") }),
     )
     .route("/viewer.js", get(|| async { asset_response("viewer.js") }))
+    .route("/admin.css", get(|| async { asset_response("admin.css") }))
+    .route("/admin.js", get(|| async { asset_response("admin.js") }))
     .route(
       "/health",
       get(|| async { axum::Json(serde_json::json!({"status": "ok"})) }),
     )
     .route("/api/session/{token}", get(session_check))
-    .route("/api/peers", get(list_peers))
-    .route("/api/peers/{id}/disconnect", post(disconnect_peer))
+    .route("/admin/{token}", get(admin_page))
+    .route("/api/admin/state", get(admin_state))
+    .route("/api/admin/qr", get(admin_qr))
+    .route("/api/admin/pending/{id}/allow", post(admin_allow))
+    .route("/api/admin/pending/{id}/deny", post(admin_deny))
+    .route("/api/admin/peers/{id}/disconnect", post(admin_disconnect))
     .route("/ws/{token}", get(ws_upgrade))
     .with_state(state)
 }
@@ -238,36 +310,177 @@ async fn session_check(
   }
 }
 
-async fn list_peers(
+/// Admin origin rule: loopback always, LAN only when explicitly allowed.
+#[must_use]
+fn admin_origin_allowed(ip: IpAddr, allow_lan: bool) -> bool {
+  allow_lan || ip.is_loopback()
+}
+
+/// Admin gate: wrong/missing token is a plain 404 (the surface must not be
+/// distinguishable from a dead route); a wrong-origin request is a 403.
+/// Returns `None` when the request is authorized.
+fn admin_denied(state: &AppState, token: Option<&str>, ip: IpAddr) -> Option<Response> {
+  if !token.is_some_and(|t| state.admin_token.matches(t)) {
+    return Some(StatusCode::NOT_FOUND.into_response());
+  }
+  if !admin_origin_allowed(ip, state.admin_allow_lan) {
+    return Some(StatusCode::FORBIDDEN.into_response());
+  }
+  None
+}
+
+async fn admin_page(
+  State(state): State<Arc<AppState>>,
+  Path(token): Path<String>,
+  ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+  if !state.admin_token.matches(&token) {
+    return (
+      StatusCode::NOT_FOUND,
+      [(CONTENT_TYPE, "text/html; charset=utf-8")],
+      INVALID_LINK_HTML,
+    )
+      .into_response();
+  }
+  if !admin_origin_allowed(addr.ip(), state.admin_allow_lan) {
+    return StatusCode::FORBIDDEN.into_response();
+  }
+  asset_response("admin.html")
+}
+
+#[derive(Serialize)]
+struct AdminPeerView {
+  id: String,
+  device: String,
+  address: Option<IpAddr>,
+  since_secs: u64,
+}
+
+#[derive(Serialize)]
+struct AdminPendingView {
+  id: String,
+  device: String,
+  address: Option<IpAddr>,
+  waited_secs: u64,
+}
+
+/// Round an fps rate to one decimal for display.
+fn round_fps(value: f64) -> f64 {
+  (value * 10.0).round() / 10.0
+}
+
+async fn admin_state(
   State(state): State<Arc<AppState>>,
   Query(q): Query<TokenQuery>,
-) -> impl IntoResponse {
-  let Some(token) = q.token.filter(|t| state.token.matches(t)) else {
-    return StatusCode::FORBIDDEN.into_response();
-  };
-  let _ = token;
+  ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+  if let Some(denied) = admin_denied(&state, q.token.as_deref(), addr.ip()) {
+    return denied;
+  }
   let now = Instant::now();
-  let peers: Vec<PeerView> = state
+  let fps = state.sample_fps();
+  let peers: Vec<AdminPeerView> = state
     .registry
     .list()
     .into_iter()
-    .map(|p| PeerView {
+    .map(|p| AdminPeerView {
       id: p.id.to_string(),
+      device: describe_user_agent(p.user_agent.as_deref()),
       address: p.address,
-      user_agent: p.user_agent,
       since_secs: now.duration_since(p.joined_at).as_secs(),
     })
     .collect();
-  axum::Json(peers).into_response()
+  let pending: Vec<AdminPendingView> = state
+    .approvals
+    .poll()
+    .into_iter()
+    .map(|req| AdminPendingView {
+      id: req.id.to_string(),
+      device: describe_user_agent(req.peer.user_agent.as_deref()),
+      address: req.peer.address,
+      waited_secs: req.waited.as_secs(),
+    })
+    .collect();
+  axum::Json(serde_json::json!({
+    "status": "streaming",
+    "source": {
+      "label": state.stream.source_label,
+      "width": state.stream.width,
+      "height": state.stream.height,
+    },
+    "fps": {
+      "target": state.stream.target_fps,
+      "capture": fps.map(|(captured, _)| round_fps(captured)),
+      "encoded": fps.map(|(_, encoded)| round_fps(encoded)),
+    },
+    "quality": state.stream.quality,
+    "bitrate": state.stream.bitrate_label,
+    "audio": state.stream.audio_label,
+    "viewerUrl": state.stream.viewer_url,
+    "pending": pending,
+    "peers": peers,
+  }))
+  .into_response()
 }
 
-async fn disconnect_peer(
+async fn admin_allow(
   State(state): State<Arc<AppState>>,
   Path(id): Path<String>,
   Query(q): Query<TokenQuery>,
-) -> impl IntoResponse {
-  if !q.token.is_some_and(|t| state.token.matches(&t)) {
-    return StatusCode::FORBIDDEN.into_response();
+  ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+  admin_decide(
+    &state,
+    &id,
+    q.token.as_deref(),
+    addr.ip(),
+    AuthDecision::Allow,
+  )
+}
+
+async fn admin_deny(
+  State(state): State<Arc<AppState>>,
+  Path(id): Path<String>,
+  Query(q): Query<TokenQuery>,
+  ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+  admin_decide(
+    &state,
+    &id,
+    q.token.as_deref(),
+    addr.ip(),
+    AuthDecision::Deny,
+  )
+}
+
+fn admin_decide(
+  state: &AppState,
+  id: &str,
+  token: Option<&str>,
+  ip: IpAddr,
+  decision: AuthDecision,
+) -> Response {
+  if let Some(denied) = admin_denied(state, token, ip) {
+    return denied;
+  }
+  let Ok(parsed) = id.parse::<PeerIdStr>() else {
+    return StatusCode::NOT_FOUND.into_response();
+  };
+  if state.approvals.decide(parsed.0, decision) {
+    StatusCode::OK.into_response()
+  } else {
+    StatusCode::NOT_FOUND.into_response()
+  }
+}
+
+async fn admin_disconnect(
+  State(state): State<Arc<AppState>>,
+  Path(id): Path<String>,
+  Query(q): Query<TokenQuery>,
+  ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+  if let Some(denied) = admin_denied(&state, q.token.as_deref(), addr.ip()) {
+    return denied;
   }
   let Ok(parsed) = id.parse::<PeerIdStr>() else {
     return StatusCode::NOT_FOUND.into_response();
@@ -277,6 +490,41 @@ async fn disconnect_peer(
   } else {
     StatusCode::NOT_FOUND.into_response()
   }
+}
+
+async fn admin_qr(
+  State(state): State<Arc<AppState>>,
+  Query(q): Query<TokenQuery>,
+  ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+  if let Some(denied) = admin_denied(&state, q.token.as_deref(), addr.ip()) {
+    return denied;
+  }
+  match qr_svg(&state.stream.viewer_url) {
+    Some(svg) => ([(CONTENT_TYPE, "image/svg+xml; charset=utf-8")], svg).into_response(),
+    None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+  }
+}
+
+/// Minimal dependency-free SVG QR rendering (light background, dark
+/// modules — the contrast scanners expect).
+fn qr_svg(data: &str) -> Option<String> {
+  let code = qrcode::QrCode::new(data).ok()?;
+  let side = code.width();
+  let quiet = 2usize;
+  let total = side + quiet * 2;
+  let mut path = String::new();
+  for (index, color) in code.to_colors().iter().enumerate() {
+    if *color == qrcode::types::Color::Dark {
+      let x = index % side;
+      let y = index / side;
+      // Writing into a String cannot fail.
+      let _ = write!(path, "M{x} {y}h1v1h-1z");
+    }
+  }
+  Some(format!(
+    r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {total} {total}" shape-rendering="crispEdges"><rect width="{total}" height="{total}" fill="#e7ecf2"/><g transform="translate({quiet} {quiet})" fill="#0b0d10"><path d="{path}"/></g></svg>"##
+  ))
 }
 
 /// Wrapper so path ids round-trip to a [`PeerId`].
@@ -345,10 +593,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, addr: IpAddr, ua
     user_agent: ua,
     joined_at: Instant::now(),
   };
-  let handle = state.registry.join(info.clone());
   let _ = out_tx.send(HostMessage::Waiting);
 
-  // Host approval gate (fail closed).
+  // Host approval gate (fail closed): the viewer is only listed as
+  // connected once the host has admitted it.
   let allowed = matches!(
     state.authorizer.request(info.clone()).await,
     Ok(AuthDecision::Allow)
@@ -358,9 +606,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, addr: IpAddr, ua
       message: "The host declined this connection.".to_owned(),
     });
     grace_flush(&writer).await;
-    state.registry.leave(peer_id);
     return;
   }
+  let handle = state.registry.join(info);
 
   // WebRTC peer with a complete (non-trickle) offer. The media fan-out is
   // the source of truth: unavailable audio must not create an SDP track.
@@ -651,5 +899,36 @@ mod tests {
     let configured = vec!["10.0.0.1:5000".to_owned(), "127.0.0.1:0".to_owned()];
     let bind = ice_bind_addrs(&configured, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 179)));
     assert_eq!(bind, configured, "an explicit bind list is used as given");
+  }
+
+  #[test]
+  fn admin_defaults_to_loopback_only() {
+    assert!(admin_origin_allowed(IpAddr::V4(Ipv4Addr::LOCALHOST), false));
+    assert!(admin_origin_allowed(
+      IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+      false
+    ));
+    assert!(
+      !admin_origin_allowed(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), false),
+      "LAN origins must not reach the admin surface by default"
+    );
+    assert!(admin_origin_allowed(
+      IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)),
+      true
+    ));
+  }
+
+  #[test]
+  fn qr_svg_renders_viewer_url() {
+    let svg = qr_svg("http://192.168.1.5:3131/s/sometoken").expect("a URL always fits a QR code");
+    assert!(svg.starts_with("<svg"));
+    assert!(svg.contains("<path d=\"M"), "dark modules must be drawn");
+  }
+
+  #[test]
+  fn qr_svg_rejects_impossible_data() {
+    // Beyond QR capacity: the helper must return None, not panic.
+    let huge = "x".repeat(8000);
+    assert!(qr_svg(&huge).is_none());
   }
 }

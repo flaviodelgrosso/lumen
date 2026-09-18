@@ -12,36 +12,15 @@
 //! audio frames would glitch the stream — so there is no latest-only
 //! shortcut here.
 
-use std::sync::{
-  Arc,
-  atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
-};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use lumen_capture::{AudioCaptureSource, CaptureError, CaptureSource};
-use lumen_core::{EncodedAudioFrame, EncodedFrame, RawFrame};
+use lumen_core::{EncodedAudioFrame, EncodedFrame, PipelineStats, RawFrame};
 use lumen_encoder::{AudioEncoder, EncodeError, VideoEncoder};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
-
-/// Live counters for diagnostics.
-#[derive(Debug, Default)]
-pub struct PipelineStats {
-  /// Frames produced by the capture source.
-  pub captured: AtomicU64,
-  /// Access units produced by the encoder.
-  pub encoded: AtomicU64,
-  /// Mean encode latency in microseconds (EMA).
-  pub encode_latency_us: AtomicU64,
-  /// Broadcast fan-out capacity.
-  pub fanout_capacity: AtomicU32,
-  /// Subscribers currently attached to the fan-out.
-  pub subscribers: AtomicUsize,
-  /// PCM buffers produced by the audio capture source.
-  pub audio_captured: AtomicU64,
-  /// Opus packets produced by the audio encoder.
-  pub audio_encoded: AtomicU64,
-}
 
 /// Broadcast capacity for the audio fan-out (20 ms packets → ~2 s).
 const AUDIO_FANOUT: usize = 100;

@@ -8,10 +8,18 @@
   --err: #f87171;
   --card: rgba(20, 24, 30, 0.92);
   --radius: 14px;
+  --tap: 44px;
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* The UA `[hidden]` rule loses to any author `display` rule and to SVG's own
+   UA defaults, so state-toggled icons (mute/unmute, fullscreen, overlay
+   glyphs) must be hidden explicitly, always. */
+[hidden] {
+  display: none !important;
 }
 
 html,
@@ -28,6 +36,18 @@ body {
     sans-serif;
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 #stage {
@@ -56,6 +76,14 @@ body {
   display: block;
 }
 
+#screen.fill {
+  object-fit: cover; /* crop to fill the screen */
+}
+
+#screen.mirror {
+  transform: scaleX(-1); /* horizontal flip */
+}
+
 /* ---------- overlay (waiting / errors) ---------- */
 
 #overlay {
@@ -67,10 +95,6 @@ body {
   padding: 24px;
   padding-left: max(24px, env(safe-area-inset-left));
   padding-right: max(24px, env(safe-area-inset-right));
-}
-
-#overlay[hidden] {
-  display: none;
 }
 
 #overlay-card {
@@ -93,12 +117,17 @@ body {
   animation: spin 1s linear infinite;
 }
 
-#overlay-icon.done,
 #overlay-icon.error {
   animation: none;
   border: none;
-  font-size: calc(var(--icon-size) - 4px);
-  line-height: var(--icon-size);
+  display: grid;
+  place-items: center;
+  color: var(--err);
+}
+
+#overlay-icon svg {
+  width: calc(var(--icon-size) - 4px);
+  height: calc(var(--icon-size) - 4px);
 }
 
 #overlay-title {
@@ -111,6 +140,32 @@ body {
 #overlay-message {
   margin: 0;
   color: var(--muted);
+}
+
+#btn-retry {
+  margin: 18px auto 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--tap);
+  padding: 0 18px;
+  border-radius: 12px;
+  border: 1px solid rgba(125, 211, 252, 0.45);
+  background: rgba(125, 211, 252, 0.12);
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+#btn-retry svg {
+  width: 18px;
+  height: 18px;
+}
+
+#btn-retry:active {
+  transform: scale(0.96);
 }
 
 @keyframes spin {
@@ -176,15 +231,22 @@ body {
 }
 
 #hud-actions button {
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
+  width: var(--tap);
+  height: var(--tap);
+  border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: var(--card);
   color: var(--fg);
-  font-size: 17px;
   cursor: pointer;
   touch-action: manipulation;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+#hud-actions button svg {
+  width: 22px;
+  height: 22px;
 }
 
 #hud-actions button:active {
@@ -194,6 +256,71 @@ body {
 #hud-actions button.active {
   border-color: rgba(125, 211, 252, 0.5);
   color: var(--accent);
+}
+
+/* ---------- settings panel ---------- */
+
+#settings {
+  position: absolute;
+  top: calc(64px + env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  width: min(300px, calc(100vw - 24px));
+  background: var(--card);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+  z-index: 3;
+}
+
+.setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.setting-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.seg {
+  display: flex;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.seg button {
+  min-width: 64px;
+  min-height: var(--tap);
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  touch-action: manipulation;
+  padding: 0 12px;
+}
+
+.seg button[aria-pressed="true"] {
+  background: rgba(125, 211, 252, 0.14);
+  color: var(--accent);
+}
+
+#stats-line {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 480px) {
@@ -218,5 +345,11 @@ body {
 
   #hud {
     top: calc(8px + env(safe-area-inset-top));
+  }
+
+  #settings {
+    top: calc(60px + env(safe-area-inset-top));
+    max-height: calc(100% - 80px);
+    overflow-y: auto;
   }
 }

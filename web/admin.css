@@ -1,0 +1,358 @@
+:root {
+  --bg: #0b0d10;
+  --fg: #e7ecf2;
+  --muted: #8a94a3;
+  --accent: #7dd3fc;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --err: #f87171;
+  --card: #14181e;
+  --line: rgba(255, 255, 255, 0.07);
+  --radius: 14px;
+  --tap: 44px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* The UA `[hidden]` rule loses to any author `display` rule; keep one global
+   guarantee instead of per-element guards. */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    15px/1.5 system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ---------- top bar ---------- */
+
+#bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  padding-top: calc(10px + env(safe-area-inset-top));
+  background: rgba(11, 13, 16, 0.92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+
+#brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+#brand h1 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+#role {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+
+#bar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+#status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--err);
+}
+
+#status-dot.live {
+  background: var(--ok);
+}
+
+#lang {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+#lang button {
+  min-width: var(--tap);
+  height: 38px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#lang button[aria-pressed="true"] {
+  background: rgba(125, 211, 252, 0.14);
+  color: var(--accent);
+}
+
+/* ---------- layout ---------- */
+
+main {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 16px 16px calc(24px + env(safe-area-inset-bottom));
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+
+#card-stream {
+  grid-column: 1 / -1;
+}
+
+.card h2 {
+  margin: 0 0 14px;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.count {
+  background: rgba(125, 211, 252, 0.14);
+  color: var(--accent);
+  border-radius: 999px;
+  font-size: 12px;
+  min-width: 22px;
+  text-align: center;
+  padding: 1px 7px;
+  letter-spacing: 0;
+}
+
+/* ---------- stream grid ---------- */
+
+#stream-grid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px 20px;
+}
+
+#stream-grid dt {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+#stream-grid dd {
+  margin: 2px 0 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- share ---------- */
+
+#share-row {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+#qr {
+  border-radius: 10px;
+  background: #e7ecf2;
+  flex: 0 0 auto;
+}
+
+#share-side {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+#share-side label {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 6px;
+}
+
+#url-row {
+  display: flex;
+  gap: 8px;
+}
+
+#viewer-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--tap);
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0 12px;
+  font: 13px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+#btn-copy {
+  flex: 0 0 auto;
+  min-height: var(--tap);
+  min-width: 84px;
+  padding: 0 16px;
+  border: 1px solid rgba(125, 211, 252, 0.4);
+  border-radius: 10px;
+  background: rgba(125, 211, 252, 0.12);
+  color: var(--accent);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+#btn-copy:active {
+  transform: scale(0.97);
+}
+
+#copy-hint {
+  margin: 8px 0 0;
+  color: var(--ok);
+  font-size: 13px;
+}
+
+.hint {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* ---------- device lists ---------- */
+
+.device-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.device-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  flex-wrap: wrap;
+}
+
+.device-main {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.device-name {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.device-meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.device-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.device-actions button {
+  min-height: var(--tap);
+  min-width: var(--tap);
+  padding: 0 16px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.device-actions button:active {
+  transform: scale(0.97);
+}
+
+.device-actions .allow {
+  border-color: rgba(52, 211, 153, 0.45);
+  color: var(--ok);
+  background: rgba(52, 211, 153, 0.1);
+}
+
+.device-actions .deny,
+.device-actions .kick {
+  border-color: rgba(248, 113, 113, 0.4);
+  color: var(--err);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.empty {
+  color: var(--muted);
+  margin: 4px 0 0;
+}
+
+/* ---------- narrow screens ---------- */
+
+@media (max-width: 760px) {
+  main {
+    grid-template-columns: 1fr;
+  }
+}

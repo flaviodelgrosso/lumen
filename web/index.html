@@ -20,7 +20,26 @@
 
       <div id="overlay" hidden>
         <div id="overlay-card">
-          <div id="overlay-icon" aria-hidden="true"></div>
+          <div id="overlay-icon" aria-hidden="true">
+            <svg
+              id="overlay-glyph-err"
+              hidden
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+            >
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </div>
+          <button id="btn-retry" type="button" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 11a8 8 0 1 0-2.3 6.3" />
+              <path d="M20 4v7h-7" />
+            </svg>
+            <span data-i18n="retry">Try again</span>
+          </button>
           <h1 id="overlay-title">Lumen</h1>
           <p id="overlay-message">Connecting…</p>
         </div>
@@ -39,7 +58,14 @@
             aria-label="Unmute"
             aria-pressed="false"
           >
-            🔇
+            <svg id="icon-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+              <path d="M16 9l5 6M21 9l-5 6" />
+            </svg>
+            <svg id="icon-unmuted" hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M11 5 6 9H3v6h3l5 4V5Z" />
+              <path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 6a9 9 0 0 1 0 12" />
+            </svg>
           </button>
           <button
             id="btn-fullscreen"
@@ -47,10 +73,70 @@
             aria-label="Toggle fullscreen"
             aria-pressed="false"
           >
-            ⛶
+            <svg id="icon-fs-enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" />
+            </svg>
+            <svg id="icon-fs-exit" hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5" />
+            </svg>
           </button>
-          <button id="btn-reconnect" type="button" aria-label="Reconnect">↻</button>
+          <button
+            id="btn-settings"
+            type="button"
+            aria-label="Settings"
+            aria-pressed="false"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M4 7h9M17 7h3M4 17h3M11 17h9" />
+              <circle cx="15" cy="7" r="2.2" />
+              <circle cx="9" cy="17" r="2.2" />
+            </svg>
+          </button>
+          <button id="btn-reconnect" type="button" aria-label="Reconnect">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 11a8 8 0 1 0-2.3 6.3" />
+              <path d="M20 4v7h-7" />
+            </svg>
+          </button>
         </div>
+      </div>
+
+      <div id="settings" hidden role="group" aria-labelledby="settings-title">
+        <h2 id="settings-title" class="sr-only" data-i18n="settings">Settings</h2>
+
+        <div class="setting">
+          <span class="setting-label" data-i18n="fitLabel">Picture</span>
+          <div class="seg" role="group" aria-label="Picture sizing">
+            <button id="btn-fit" type="button" data-i18n="fit" aria-pressed="true">Fit</button>
+            <button id="btn-fill" type="button" data-i18n="fill" aria-pressed="false">Fill</button>
+          </div>
+        </div>
+
+        <div class="setting">
+          <span class="setting-label" data-i18n="mirrorLabel">Mirror</span>
+          <div class="seg" role="group" aria-label="Mirror">
+            <button id="btn-mirror-off" type="button" data-i18n="off" aria-pressed="true">Off</button>
+            <button id="btn-mirror-on" type="button" data-i18n="on" aria-pressed="false">On</button>
+          </div>
+        </div>
+
+        <div class="setting">
+          <span class="setting-label" data-i18n="statsLabel">Live stats</span>
+          <div class="seg" role="group" aria-label="Live stats">
+            <button id="btn-stats-off" type="button" data-i18n="off" aria-pressed="true">Off</button>
+            <button id="btn-stats-on" type="button" data-i18n="on" aria-pressed="false">On</button>
+          </div>
+        </div>
+
+        <div class="setting">
+          <span class="setting-label" data-i18n="language">Language</span>
+          <div class="seg" role="group" aria-label="Language">
+            <button id="btn-lang-en" type="button" aria-pressed="true">EN</button>
+            <button id="btn-lang-it" type="button" aria-pressed="false">IT</button>
+          </div>
+        </div>
+
+        <p id="stats-line" hidden aria-live="off"></p>
       </div>
     </main>
 

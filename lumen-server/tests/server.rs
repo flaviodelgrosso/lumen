@@ -1,23 +1,26 @@
-//! Tests: routes, token validation, authorization, signaling, kicking.
+//! Tests: routes, viewer/admin token split, approval workflow, signaling,
+//! kicking.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use lumen_session::{AuthDecision, Authorizer, PeerRegistry, SessionToken};
+use lumen_session::{ApprovalQueue, AuthDecision, Authorizer, PeerRegistry, SessionToken};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_util::sync::CancellationToken;
 
-use lumen_server::{ServerConfig, ServerHandle, spawn_server};
+use lumen_server::{ServerConfig, ServerHandle, StreamInfo, spawn_server};
 
 struct TestServer {
   token: SessionToken,
+  admin_token: SessionToken,
   addr: SocketAddr,
   registry: Arc<PeerRegistry>,
+  approvals: ApprovalQueue,
   shutdown: CancellationToken,
   server: Option<ServerHandle>,
 }
@@ -35,21 +38,38 @@ impl TestServer {
       let _ = tokio::time::timeout(Duration::from_secs(5), server.join()).await;
     }
   }
+
+  fn admin_query(&self) -> String {
+    format!("token={}", self.admin_token)
+  }
 }
 
-async fn start(approve: bool) -> TestServer {
-  let token = SessionToken::generate().expect("token");
-  let (authorizer, mut requests) = Authorizer::channel(16);
+/// Answer every pending approval with `decision` as soon as it appears.
+fn spawn_auto_responder(queue: ApprovalQueue, decision: AuthDecision) {
   tokio::spawn(async move {
-    while let Some(req) = requests.recv().await {
-      let decision = if approve {
-        AuthDecision::Allow
-      } else {
-        AuthDecision::Deny
-      };
-      let _ = req.respond.send(decision);
+    loop {
+      let waiter = queue.wait_for_change();
+      tokio::pin!(waiter);
+      waiter.as_mut().enable();
+      for pending in queue.poll() {
+        let _ = queue.decide(pending.id, decision);
+      }
+      if queue.poll().is_empty() {
+        waiter.await;
+      }
     }
   });
+}
+
+/// `approve` decides immediately in the background; `false` leaves viewers
+/// pending so tests can decide through the admin API.
+async fn start(approve: bool) -> TestServer {
+  let token = SessionToken::generate().expect("token");
+  let admin_token = SessionToken::generate().expect("admin token");
+  let (authorizer, approvals) = Authorizer::channel(16);
+  if approve {
+    spawn_auto_responder(approvals.clone(), AuthDecision::Allow);
+  }
   let (frames_tx, _rx) = broadcast::channel::<Arc<lumen_core::EncodedFrame>>(8);
   let (kf_tx, _kf_rx) = mpsc::channel(64);
   let registry = Arc::new(PeerRegistry::new());
@@ -57,26 +77,49 @@ async fn start(approve: bool) -> TestServer {
   let server = spawn_server(ServerConfig {
     port: 0,
     token: token.clone(),
+    admin_token: admin_token.clone(),
+    admin_allow_lan: false,
     authorizer,
+    approvals: approvals.clone(),
     registry: Arc::clone(&registry),
     frames: frames_tx,
     audio: None,
     keyframe_requests: kf_tx,
     shutdown: shutdown.clone(),
     webrtc_bind: Vec::new(),
+    stream: StreamInfo {
+      source_label: "Test Display".to_owned(),
+      width: 1920,
+      height: 1080,
+      target_fps: 30,
+      quality: "auto".to_owned(),
+      bitrate_label: "8M".to_owned(),
+      audio_label: "off".to_owned(),
+      viewer_url: format!("http://127.0.0.1:0/s/{token}"),
+    },
+    stats: Arc::new(lumen_core::PipelineStats::default()),
   })
   .await
   .expect("server starts");
   TestServer {
     token,
+    admin_token,
     addr: server.addr,
     registry,
+    approvals,
     shutdown,
     server: Some(server),
   }
 }
 
-/// Minimal HTTP/1.1 GET; returns (status, full response text).
+/// Manual mode: nothing answers approvals; the test decides via the API.
+async fn start_manual() -> TestServer {
+  let srv = start(false).await;
+  assert!(srv.approvals.poll().is_empty());
+  srv
+}
+
+/// Minimal HTTP/1.1 request; returns (status, full response text).
 async fn http_request(addr: SocketAddr, method: &str, path: &str) -> (u16, String) {
   let mut stream = TcpStream::connect(dialable(addr)).await.expect("connect");
   let req = format!("{method} {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
@@ -136,12 +179,50 @@ async fn next_json_type(stream: &mut TestWs, ty: &str) -> serde_json::Value {
   }
   panic!("no {ty:?} message received");
 }
+
+/// Poll the admin state until the pending list is non-empty; returns the
+/// first pending entry.
+async fn wait_pending_json(srv: &TestServer) -> serde_json::Value {
+  for _ in 0..100 {
+    let (status, body) = http_request(
+      srv.addr,
+      "GET",
+      &format!("/api/admin/state?{}", srv.admin_query()),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let json: serde_json::Value = body
+      .rsplit("\r\n\r\n")
+      .next()
+      .and_then(|b| serde_json::from_str(b).ok())
+      .expect("state json");
+    if let Some(first) = json["pending"].get(0) {
+      return first.clone();
+    }
+    tokio::time::sleep(Duration::from_millis(25)).await;
+  }
+  panic!("pending viewer never appeared");
+}
+
+async fn admin_state(srv: &TestServer) -> serde_json::Value {
+  let (status, body) = http_request(
+    srv.addr,
+    "GET",
+    &format!("/api/admin/state?{}", srv.admin_query()),
+  )
+  .await;
+  assert_eq!(status, 200);
+  body
+    .rsplit("\r\n\r\n")
+    .next()
+    .and_then(|b| serde_json::from_str(b).ok())
+    .expect("state json")
+}
+
 #[tokio::test]
 async fn invalid_tokens_are_rejected() {
   let mut srv = start(true).await;
   let (status, _) = http_request(srv.addr, "GET", "/s/wrong-token").await;
-  assert_eq!(status, 404);
-  let (status, _) = http_request(srv.addr, "GET", "/api/session/wrong-token").await;
   assert_eq!(status, 404);
   let (status, body) = http_request(srv.addr, "GET", "/api/session/wrong-token").await;
   assert_eq!(status, 404);
@@ -208,13 +289,24 @@ async fn accepted_viewer_receives_waiting_then_offer() {
 
 #[tokio::test]
 async fn declined_viewer_gets_error_and_is_not_registered() {
-  let mut srv = start(false).await;
+  let mut srv = start_manual().await;
   let mut stream = ws_connect(srv.addr, &format!("/ws/{}", srv.token))
     .await
     .expect("ws connects");
 
   let waiting = next_json(&mut stream).await;
   assert_eq!(waiting["type"], "waiting");
+
+  let pending = wait_pending_json(&srv).await;
+  let id = pending["id"].as_str().expect("pending id").to_owned();
+  let (status, _) = http_request(
+    srv.addr,
+    "POST",
+    &format!("/api/admin/pending/{id}/deny?{}", srv.admin_query()),
+  )
+  .await;
+  assert_eq!(status, 200);
+
   let error = next_json(&mut stream).await;
   assert_eq!(error["type"], "error");
 
@@ -225,21 +317,95 @@ async fn declined_viewer_gets_error_and_is_not_registered() {
 }
 
 #[tokio::test]
-async fn peers_endpoint_requires_token() {
+async fn viewer_token_cannot_access_admin_apis() {
   let mut srv = start(true).await;
-  let (status, _) = http_request(srv.addr, "GET", "/api/peers").await;
-  assert_eq!(status, 403);
-  let (status, _) = http_request(srv.addr, "GET", "/api/peers?token=nope").await;
-  assert_eq!(status, 403);
-  let (status, body) =
-    http_request(srv.addr, "GET", &format!("/api/peers?token={}", srv.token)).await;
-  assert_eq!(status, 200);
-  assert!(body.contains('['));
+  let viewer = srv.token.to_string();
+
+  // The admin dashboard and every API reject the viewer token and no token.
+  for path in [
+    format!("/admin/{viewer}"),
+    format!("/api/admin/state?token={viewer}"),
+    "/api/admin/state".to_owned(),
+    format!("/api/admin/qr?token={viewer}"),
+    "/api/admin/qr".to_owned(),
+  ] {
+    let (status, _) = http_request(srv.addr, "GET", &path).await;
+    assert_eq!(
+      status, 404,
+      "{path} must not be reachable with a viewer token"
+    );
+  }
+  let (status, _) = http_request(
+    srv.addr,
+    "POST",
+    &format!("/api/admin/pending/deadbeef/allow?token={viewer}"),
+  )
+  .await;
+  assert_eq!(status, 404);
+  let (status, _) = http_request(
+    srv.addr,
+    "POST",
+    &format!("/api/admin/peers/deadbeef/disconnect?token={viewer}"),
+  )
+  .await;
+  assert_eq!(status, 404);
   srv.stop().await;
 }
 
 #[tokio::test]
-async fn host_can_disconnect_a_viewer_without_stopping_server() {
+async fn admin_page_and_state_require_admin_token() {
+  let mut srv = start(true).await;
+  let (status, body) = http_request(srv.addr, "GET", &format!("/admin/{}", srv.admin_token)).await;
+  assert_eq!(status, 200);
+  assert!(body.contains("text/html"));
+
+  let json = admin_state(&srv).await;
+  assert_eq!(json["status"], "streaming");
+  assert_eq!(json["source"]["label"], "Test Display");
+  assert_eq!(json["source"]["width"], 1920);
+  assert_eq!(json["fps"]["target"], 30);
+  assert!(
+    json["viewerUrl"]
+      .as_str()
+      .is_some_and(|u| u.contains("/s/"))
+  );
+  assert!(json["pending"].is_array());
+  assert!(json["peers"].is_array());
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn admin_can_approve_pending_viewer() {
+  let mut srv = start_manual().await;
+  let mut stream = ws_connect(srv.addr, &format!("/ws/{}", srv.token))
+    .await
+    .expect("ws connects");
+  let waiting = next_json(&mut stream).await;
+  assert_eq!(waiting["type"], "waiting");
+
+  let pending = wait_pending_json(&srv).await;
+  let id = pending["id"].as_str().expect("pending id").to_owned();
+  assert_eq!(pending["address"], "127.0.0.1");
+
+  let (status, _) = http_request(
+    srv.addr,
+    "POST",
+    &format!("/api/admin/pending/{id}/allow?{}", srv.admin_query()),
+  )
+  .await;
+  assert_eq!(status, 200);
+
+  let offer = next_json_type(&mut stream, "offer").await;
+  assert!(offer["sdp"].as_str().is_some());
+
+  // The decided request leaves the pending list.
+  let json = admin_state(&srv).await;
+  assert_eq!(json["pending"].as_array().map(Vec::len), Some(0));
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn admin_can_disconnect_viewer_without_stopping_server() {
   let mut srv = start(true).await;
   let mut stream = ws_connect(srv.addr, &format!("/ws/{}", srv.token))
     .await
@@ -248,21 +414,14 @@ async fn host_can_disconnect_a_viewer_without_stopping_server() {
   let offer = next_json(&mut stream).await;
   assert_eq!(offer["type"], "offer");
 
-  // Find the peer id via the token-protected API.
-  let (status, body) =
-    http_request(srv.addr, "GET", &format!("/api/peers?token={}", srv.token)).await;
-  assert_eq!(status, 200);
-  let peers: serde_json::Value = body
-    .rsplit("\r\n\r\n")
-    .next()
-    .and_then(|b| serde_json::from_str(b).ok())
-    .expect("peers json");
-  let id = peers[0]["id"].as_str().expect("peer id").to_owned();
+  // Find the peer id via the admin API.
+  let json = admin_state(&srv).await;
+  let id = json["peers"][0]["id"].as_str().expect("peer id").to_owned();
 
   let (status, _) = http_request(
     srv.addr,
     "POST",
-    &format!("/api/peers/{id}/disconnect?token={}", srv.token),
+    &format!("/api/admin/peers/{id}/disconnect?{}", srv.admin_query()),
   )
   .await;
   assert_eq!(status, 200);
@@ -273,6 +432,21 @@ async fn host_can_disconnect_a_viewer_without_stopping_server() {
   // Server keeps serving afterwards.
   let (status, _) = http_request(srv.addr, "GET", "/health").await;
   assert_eq!(status, 200);
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn admin_qr_serves_svg() {
+  let mut srv = start(true).await;
+  let (status, body) = http_request(
+    srv.addr,
+    "GET",
+    &format!("/api/admin/qr?{}", srv.admin_query()),
+  )
+  .await;
+  assert_eq!(status, 200);
+  assert!(body.contains("image/svg+xml"));
+  assert!(body.contains("<svg"));
   srv.stop().await;
 }
 

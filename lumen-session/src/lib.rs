@@ -10,7 +10,7 @@ pub mod peer;
 pub mod signal;
 pub mod token;
 pub mod ua;
-pub use auth::{AuthDecision, AuthError, AuthRequest, Authorizer};
+pub use auth::{ApprovalQueue, AuthDecision, AuthError, Authorizer, PendingView};
 pub use peer::{PeerInfo, PeerRegistry};
 pub use signal::{HostMessage, SignalMessage, ViewerMessage};
 pub use token::{PeerId, SessionToken};

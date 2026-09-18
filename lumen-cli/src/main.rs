@@ -71,6 +71,10 @@ struct ServeArgs {
   #[arg(long)]
   auto_accept: bool,
 
+  /// Allow non-localhost clients to reach the /admin host dashboard
+  #[arg(long)]
+  allow_lan_admin: bool,
+
   /// Stream video only (no system audio)
   #[arg(long)]
   no_audio: bool,
@@ -95,6 +99,7 @@ fn main() -> anyhow::Result<()> {
     quality: None,
     max_bitrate: None,
     auto_accept: false,
+    allow_lan_admin: false,
     no_audio: false,
     no_qr: false,
     verbose: false,

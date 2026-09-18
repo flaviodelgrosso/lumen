@@ -22,8 +22,10 @@ use lumen_capture::{
 use lumen_core::StreamConfig;
 use lumen_encoder::{AudioEncoder, OpenH264Encoder, OpusAudioEncoder};
 use lumen_network::LanInterface;
-use lumen_server::{ServerConfig, spawn_server};
-use lumen_session::{AuthDecision, Authorizer, PeerRegistry, SessionToken, describe_user_agent};
+use lumen_server::{ServerConfig, ServerHandle, StreamInfo, spawn_server};
+use lumen_session::{
+  ApprovalQueue, AuthDecision, Authorizer, PeerRegistry, SessionToken, describe_user_agent,
+};
 
 use lumen_cli::pipeline;
 
@@ -98,6 +100,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
   // ── session + services ──
   let token = SessionToken::generate()?;
+  let admin_token = SessionToken::generate()?;
   let (authorizer, approvals) = Authorizer::channel(16);
   let registry = Arc::new(PeerRegistry::new());
   let (kf_tx, kf_rx) = mpsc::channel(64);
@@ -114,33 +117,32 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     audio,
   )?;
 
+  let port = args.port.unwrap_or(3131);
+  let url = Url::parse(&format!("http://{}:{}", iface.ip, port))
+    .expect("valid url")
+    .join(&format!("/s/{token}"))
+    .expect("valid path");
+  let stream = build_stream_info(&args, &cfg, dims, &url, pipeline.audio.is_some());
+
   let server = spawn_server(ServerConfig {
-    port: args.port.unwrap_or(3131),
+    port,
     token: token.clone(),
+    admin_token: admin_token.clone(),
+    admin_allow_lan: args.allow_lan_admin,
     authorizer,
+    approvals: approvals.clone(),
     registry: Arc::clone(&registry),
     frames: pipeline.frames.clone(),
     audio: pipeline.audio.clone(),
     keyframe_requests: kf_tx,
     shutdown: shutdown.clone(),
     webrtc_bind: Vec::new(),
+    stream: stream.clone(),
+    stats: Arc::clone(&pipeline.stats),
   })
   .await?;
 
-  let url = Url::parse(&format!("http://{}:{}", iface.ip, server.addr.port()))
-    .expect("valid url")
-    .join(&format!("/s/{token}"))
-    .expect("valid path");
-
-  print_banner(
-    &args,
-    &cfg,
-    pipeline.audio.is_some(),
-    &iface,
-    server.addr.port(),
-    dims,
-    &url,
-  );
+  print_banner(&args, &iface, server.addr.port(), &admin_token, &stream);
 
   let stats_task = args.verbose.then(|| {
     spawn_stats_loop(
@@ -152,8 +154,23 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     )
   });
 
-  spawn_approval_loop(approvals, args.auto_accept, shutdown.clone());
+  // The terminal prompt is one approval surface; the host dashboard is
+  // another. Without an interactive stdin the dashboard carries approvals.
+  if args.auto_accept || std::io::stdin().is_terminal() {
+    spawn_approval_loop(approvals, args.auto_accept, shutdown.clone());
+  }
 
+  wait_shutdown(server, pipeline, stats_task, shutdown).await
+}
+
+/// Graceful shutdown: cancel, drain the server, stop the pipeline, reap the
+/// stats loop.
+async fn wait_shutdown(
+  server: ServerHandle,
+  pipeline: pipeline::PipelineHandle,
+  stats_task: Option<tokio::task::JoinHandle<()>>,
+  shutdown: CancellationToken,
+) -> anyhow::Result<()> {
   tokio::signal::ctrl_c()
     .await
     .context("failed to install Ctrl+C handler")?;
@@ -222,16 +239,9 @@ fn multicast_remediation() -> &'static str {
   "A VPN or VM NIC without multicast routing fails the same way."
 }
 
-fn print_banner(
-  args: &ServeArgs,
-  cfg: &StreamConfig,
-  audio_enabled: bool,
-  iface: &LanInterface,
-  port: u16,
-  dims: lumen_core::Dimensions,
-  url: &Url,
-) {
-  let display_label = if let Some(id) = args.window {
+/// Human-readable capture source for the banner and the dashboard.
+fn source_label(args: &ServeArgs, dims: lumen_core::Dimensions) -> String {
+  if let Some(id) = args.window {
     format!("Window {id} — {}x{}", dims.width, dims.height)
   } else {
     let name = args.display.map_or_else(
@@ -245,34 +255,70 @@ fn print_banner(
       },
     );
     format!("{name} — {}x{}", dims.width, dims.height)
-  };
+  }
+}
+
+/// Audio description for the banner and the dashboard.
+fn audio_label(cfg: &StreamConfig, audio_enabled: bool) -> String {
+  if audio_enabled {
+    format!("system audio — Opus, {} stereo", cfg.audio_bitrate)
+  } else if cfg.audio {
+    "unavailable — video only".to_owned()
+  } else {
+    "off (--no-audio)".to_owned()
+  }
+}
+
+/// Assemble the dashboard/banner stream description from resolved config.
+fn build_stream_info(
+  args: &ServeArgs,
+  cfg: &StreamConfig,
+  dims: lumen_core::Dimensions,
+  url: &Url,
+  audio_enabled: bool,
+) -> StreamInfo {
+  StreamInfo {
+    source_label: source_label(args, dims),
+    width: dims.width,
+    height: dims.height,
+    target_fps: cfg.fps,
+    quality: cfg.quality.to_string(),
+    bitrate_label: cfg.effective_bitrate(dims).to_string(),
+    audio_label: audio_label(cfg, audio_enabled),
+    viewer_url: url.to_string(),
+  }
+}
+
+fn print_banner(
+  args: &ServeArgs,
+  iface: &LanInterface,
+  port: u16,
+  admin_token: &SessionToken,
+  stream: &StreamInfo,
+) {
   println!();
   println!("Lumen screen sharing server started.");
   println!();
-  println!("Display:      {display_label}");
+  println!("Display:      {}", stream.source_label);
   println!(
     "Quality:      {} ({} fps, max {})",
-    cfg.quality,
-    cfg.fps,
-    cfg.effective_bitrate(dims)
+    stream.quality, stream.target_fps, stream.bitrate_label
   );
-  println!(
-    "Audio:        {}",
-    if audio_enabled {
-      format!("system audio — Opus, {} stereo", cfg.audio_bitrate)
-    } else if cfg.audio {
-      "unavailable — video only".to_owned()
-    } else {
-      "off (--no-audio)".to_owned()
-    }
-  );
+  println!("Audio:        {}", stream.audio_label);
   println!("Listening on: {}:{}", iface.ip, port);
   println!();
   println!("Open:");
-  println!("{url}");
+  println!("{}", stream.viewer_url);
+  println!();
+  println!("Host dashboard (this computer):");
+  println!("http://127.0.0.1:{port}/admin/{admin_token}");
+  if args.allow_lan_admin {
+    println!("LAN admin access enabled (--allow-lan-admin):");
+    println!("http://{}:{port}/admin/{admin_token}", iface.ip);
+  }
   println!();
   if !args.no_qr {
-    match QrCode::new(url.as_str()) {
+    match QrCode::new(&stream.viewer_url) {
       Ok(code) => println!("{}", code.render::<Dense1x2>().build()),
       Err(e) => tracing::warn!("could not render QR code: {e}"),
     }
@@ -280,63 +326,69 @@ fn print_banner(
   println!("Waiting for devices... (Ctrl+C to stop)");
 }
 
-fn spawn_approval_loop(
-  mut approvals: mpsc::Receiver<lumen_session::AuthRequest>,
-  auto_accept: bool,
-  shutdown: CancellationToken,
-) {
+/// Terminal approval surface: prompt for each pending viewer. The admin
+/// dashboard shares the same queue; whichever surface answers first wins.
+fn spawn_approval_loop(queue: ApprovalQueue, auto_accept: bool, shutdown: CancellationToken) {
   let prompt_lock = Arc::new(tokio::sync::Mutex::new(()));
   tokio::spawn(async move {
     loop {
-      let req = tokio::select! {
-          () = shutdown.cancelled() => break,
-          got = approvals.recv() => match got { Some(r) => r, None => break },
-      };
-      let ip = req
-        .peer
-        .address
-        .map_or_else(|| "unknown".to_owned(), |a| a.to_string());
-      let ua = describe_user_agent(req.peer.user_agent.as_deref());
-      if auto_accept {
-        println!("Viewer joined: {ip} ({ua}) [auto-accepted]");
-        let _ = req.respond.send(AuthDecision::Allow);
-        continue;
-      }
-      if !std::io::stdin().is_terminal() {
-        println!(
-          "Connection from {ip} ({ua}) denied: terminal is not interactive \
-                     (run with --auto-accept to skip prompts)"
-        );
-        let _ = req.respond.send(AuthDecision::Deny);
-        continue;
-      }
-      let _guard = prompt_lock.lock().await;
-      println!("\nIncoming device:\n");
-      println!("  IP:       {ip}");
-      println!("  Browser:  {ua}");
-      println!();
-      let allowed = tokio::task::spawn_blocking(|| {
-        dialoguer::Confirm::new()
-          .with_prompt("Allow connection?")
-          .default(true)
-          .interact()
-          .unwrap_or(false)
-      })
-      .await
-      .unwrap_or(false);
-      let _ = req.respond.send(if allowed {
-        AuthDecision::Allow
-      } else {
-        AuthDecision::Deny
-      });
-      println!(
-        "{}",
-        if allowed {
-          "Connection allowed."
-        } else {
-          "Connection denied."
+      let waiter = queue.wait_for_change();
+      tokio::pin!(waiter);
+      waiter.as_mut().enable();
+      if let Some(req) = queue.poll().into_iter().next() {
+        let ip = req
+          .peer
+          .address
+          .map_or_else(|| "unknown".to_owned(), |a| a.to_string());
+        let ua = describe_user_agent(req.peer.user_agent.as_deref());
+        if auto_accept {
+          println!("Viewer joined: {ip} ({ua}) [auto-accepted]");
+          let _ = queue.decide(req.id, AuthDecision::Allow);
+          continue;
         }
-      );
+        let _guard = prompt_lock.lock().await;
+        // The dashboard may have decided while this iteration was queued.
+        if queue.poll().iter().all(|pending| pending.id != req.id) {
+          continue;
+        }
+        println!("\nIncoming device:\n");
+        println!("  IP:       {ip}");
+        println!("  Browser:  {ua}");
+        println!();
+        let allowed = tokio::task::spawn_blocking(|| {
+          dialoguer::Confirm::new()
+            .with_prompt("Allow connection?")
+            .default(true)
+            .interact()
+            .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false);
+        if queue.decide(
+          req.id,
+          if allowed {
+            AuthDecision::Allow
+          } else {
+            AuthDecision::Deny
+          },
+        ) {
+          println!(
+            "{}",
+            if allowed {
+              "Connection allowed."
+            } else {
+              "Connection denied."
+            }
+          );
+        } else {
+          println!("Connection already handled from the host dashboard.");
+        }
+        continue;
+      }
+      tokio::select! {
+          () = shutdown.cancelled() => break,
+          () = waiter => {}
+      }
     }
   });
 }
@@ -346,7 +398,7 @@ fn spawn_approval_loop(
   reason = "displayed fps/latency stats; counter magnitudes are far below 2^53"
 )]
 fn spawn_stats_loop(
-  stats: Arc<pipeline::PipelineStats>,
+  stats: Arc<lumen_core::PipelineStats>,
   registry: Arc<PeerRegistry>,
   cfg: StreamConfig,
   dims: lumen_core::Dimensions,

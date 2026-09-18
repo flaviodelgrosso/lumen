@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0d10" />
+    <title>Lumen — Host</title>
+    <link rel="stylesheet" href="/admin.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%237dd3fc'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <header id="bar">
+      <div id="brand">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" fill="none" stroke="#7dd3fc" stroke-width="2" />
+          <circle cx="12" cy="12" r="3.5" fill="#7dd3fc" />
+        </svg>
+        <h1>Lumen</h1>
+        <span id="role" data-i18n="role">Host</span>
+      </div>
+      <div id="bar-right">
+        <span id="status-pill" role="status" aria-live="polite">
+          <span id="status-dot" aria-hidden="true"></span>
+          <span id="status-text" data-i18n="streaming">Streaming</span>
+        </span>
+        <div id="lang" role="group" aria-label="Language">
+          <button type="button" data-lang="en" aria-pressed="true">EN</button>
+          <button type="button" data-lang="it" aria-pressed="false">IT</button>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="card" id="card-stream" aria-labelledby="t-stream">
+        <h2 id="t-stream" data-i18n="streamTitle">Stream</h2>
+        <dl id="stream-grid">
+          <div><dt data-i18n="source">Source</dt><dd id="s-source">—</dd></div>
+          <div><dt data-i18n="resolution">Resolution</dt><dd id="s-res">—</dd></div>
+          <div><dt data-i18n="fps">Frame rate</dt><dd id="s-fps">—</dd></div>
+          <div><dt data-i18n="quality">Quality</dt><dd id="s-quality">—</dd></div>
+          <div><dt data-i18n="bitrate">Bitrate</dt><dd id="s-bitrate">—</dd></div>
+          <div><dt data-i18n="audio">Audio</dt><dd id="s-audio">—</dd></div>
+        </dl>
+      </section>
+
+      <section class="card" id="card-share" aria-labelledby="t-share">
+        <h2 id="t-share" data-i18n="shareTitle">Share</h2>
+        <div id="share-row">
+          <img id="qr" alt="QR code" data-i18n-alt="qrAlt" width="200" height="200" />
+          <div id="share-side">
+            <label for="viewer-url" data-i18n="viewerLink">Viewer link</label>
+            <div id="url-row">
+              <input id="viewer-url" type="text" readonly spellcheck="false" />
+              <button id="btn-copy" type="button" data-i18n="copy">Copy</button>
+            </div>
+            <p id="copy-hint" role="status" hidden></p>
+            <p class="hint" data-i18n="shareHint">
+              Scan the QR code or open the link on a device on this network.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="t-pending">
+        <h2 id="t-pending">
+          <span data-i18n="pendingTitle">Pending requests</span>
+          <span class="count" id="pending-count" aria-hidden="true">0</span>
+        </h2>
+        <ul id="pending-list" class="device-list" aria-live="polite"></ul>
+        <p class="empty" id="pending-empty" data-i18n="pendingEmpty">No devices waiting.</p>
+      </section>
+
+      <section class="card" aria-labelledby="t-connected">
+        <h2 id="t-connected">
+          <span data-i18n="connectedTitle">Connected devices</span>
+          <span class="count" id="connected-count" aria-hidden="true">0</span>
+        </h2>
+        <ul id="connected-list" class="device-list" aria-live="polite"></ul>
+        <p class="empty" id="connected-empty" data-i18n="connectedEmpty">
+          No viewers are watching yet.
+        </p>
+      </section>
+    </main>
+
+    <script src="/admin.js"></script>
+  </body>
+</html>
