@@ -52,7 +52,7 @@ Works on **macOS 13+** (ScreenCaptureKit, video + system audio) and **Windows 10
 ### Install
 
 ```sh
-cargo install --path lumen-cli --locked
+make install
 ```
 
 Or build in-tree: `cargo build --release` (→ `target/release/lumen`).
@@ -60,7 +60,7 @@ Or build in-tree: `cargo build --release` (→ `target/release/lumen`).
 ### Run
 
 ```sh
-lumen serve
+lumen
 ```
 
 `lumen` prints a viewer URL, a QR code and a **host dashboard** URL. Open the viewer URL (or scan the QR) on any device on the same network, then approve the device in the terminal or on the dashboard unless `--auto-accept` is set. The viewer URL is `http://<lan-ip>:3131/s/<token>`; the bare `http://<lan-ip>:3131/` redirects to it for the host machine's own browser. The dashboard (`http://127.0.0.1:3131/admin/<admin-token>`) is reachable **from the host machine only** unless you pass `--allow-lan-admin`.
