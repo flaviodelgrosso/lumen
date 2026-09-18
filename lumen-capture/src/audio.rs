@@ -1,17 +1,12 @@
 //! System-audio capture behind a portable trait.
 //!
 //! The production implementation opens a dedicated audio-only
-//! `ScreenCaptureKit` stream (macOS 13+). The `screencapturekit` facade
-//! crate is deliberately *not* used here: its output bridge calls
-//! `get_frame_info()` on every sample buffer, which panics on audio buffers
-//! (they carry no sample-attachment array), so this module drives the
-//! `screencapturekit-sys` bindings directly.
-//!
-//! SCK delivers audio in the output device's format, so buffers are
+//! `ScreenCaptureKit` stream (macOS 13+) through the `screencapturekit`
+//! crate. SCK delivers audio in the output device's format, so buffers are
 //! normalized to 48 kHz stereo interleaved `f32` — Opus' native rate and
-//! format — via the resampler in [`crate::resample`]. Other platforms
-//! report [`CaptureError::AudioNotSupported`]. Tests use
-//! [`FakeAudioCapture`] so they never need audio hardware.
+//! format — via the resampler in [`crate::resample`]. Other platforms report
+//! [`CaptureError::AudioNotSupported`]. Tests use [`FakeAudioCapture`] so
+//! they never need audio hardware.
 
 use std::time::{Duration, Instant};
 
@@ -47,48 +42,35 @@ const QUEUE_BUFFERS: usize = 64;
 
 #[cfg(target_os = "macos")]
 mod macos {
+  use std::sync::Arc;
   use std::sync::Mutex;
   use std::sync::atomic::{AtomicBool, Ordering};
   use std::time::Instant;
 
   use bytes::Bytes;
-  use screencapturekit_sys::{
-    cm_sample_buffer_ref::CMSampleBufferRef,
-    content_filter::{UnsafeContentFilter, UnsafeInitParams},
-    os_types::rc::Id,
-    shareable_content::UnsafeSCShareableContent,
-    stream::UnsafeSCStream,
-    stream_configuration::{UnsafeStreamConfiguration, UnsafeStreamConfigurationRef},
-    stream_error_handler::UnsafeSCStreamError,
-    stream_output_handler::UnsafeSCStreamOutput,
-  };
+  use lumen_core::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, RawAudioFrame};
+  use screencapturekit::cm::CMSampleBuffer;
+  use screencapturekit::prelude::*;
 
-  use super::{
-    AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, CaptureError, POLL_INTERVAL, QUEUE_BUFFERS, RawAudioFrame,
-  };
+  use super::{POLL_INTERVAL, QUEUE_BUFFERS};
   use crate::resample::LaneResampler;
+  use crate::{CaptureError, FrameSender, SendOutcome, require_permission};
 
-  /// `SCStreamOutputTypeAudio` as the sys bindings spell it.
-  const OUTPUT_TYPE_AUDIO: u8 = 1;
+  /// `kLinearPCMFormatFlagIsPacked` / `kLinearPCMFormatFlagIsNonInterleaved`
+  /// from `CoreAudio/AudioFormat.h`.
+  const PCM_IS_PACKED: u32 = 1 << 3;
+  const PCM_IS_NON_INTERLEAVED: u32 = 1 << 5;
 
   /// System-audio capture backed by a `ScreenCaptureKit` audio-only stream.
-  pub struct ScapAudioCapture {
+  pub struct PlatformAudioCapture {
     rx: std::sync::mpsc::Receiver<RawAudioFrame>,
-    stream: Id<UnsafeSCStream>,
-  }
-
-  /// Logs stream errors; SCK surfaces no detail through the delegate.
-  struct LoggingErrorHandler;
-
-  impl UnsafeSCStreamError for LoggingErrorHandler {
-    fn handle_error(&self) {
-      tracing::warn!("ScreenCaptureKit audio stream reported an error");
-    }
+    stream: SCStream,
+    bridge: Arc<FrameSender<RawAudioFrame>>,
   }
 
   /// SCK → pipeline bridge; runs on the SCK dispatch queue.
   struct PcmOutput {
-    tx: std::sync::mpsc::SyncSender<RawAudioFrame>,
+    bridge: Arc<FrameSender<RawAudioFrame>>,
     /// Resampler lanes; the SCK queue is concurrent, so the state is
     /// mutex-guarded.
     state: Mutex<PcmState>,
@@ -137,9 +119,9 @@ mod macos {
   }
 
   impl PcmOutput {
-    fn new(tx: std::sync::mpsc::SyncSender<RawAudioFrame>) -> Self {
+    fn new(bridge: Arc<FrameSender<RawAudioFrame>>) -> Self {
       Self {
-        tx,
+        bridge,
         state: Mutex::new(PcmState::default()),
         warned: AtomicBool::new(false),
       }
@@ -157,29 +139,21 @@ mod macos {
       reason = "the sample rate is range-validated (positive, in range) \
                       before the cast"
     )]
-    fn sample_to_raw(&self, sample: &CMSampleBufferRef) -> Option<RawAudioFrame> {
+    fn sample_to_raw(&self, sample: &CMSampleBuffer) -> Option<RawAudioFrame> {
       let captured_at = Instant::now();
-      let description = sample.get_format_description()?;
-      let Some(asbd) = description.audio_format_description_get_stream_basic_description() else {
-        self.warn_format("no stream basic description");
-        return None;
-      };
-      if asbd.format_id != screencapturekit_sys::cm_format_description_ref::kAudioFormatLinearPCM
-        || asbd.format_flags
-          & screencapturekit_sys::cm_format_description_ref::kLinearPCMFormatFlagIsFloat
-          == 0
-        || asbd.format_flags
-          & screencapturekit_sys::cm_format_description_ref::kLinearPCMFormatFlagIsPacked
-          == 0
-        || asbd.format_flags
-          & screencapturekit_sys::cm_format_description_ref::kLinearPCMFormatFlagIsBigEndian
-          != 0
-        || asbd.bits_per_channel != 32
+      let description = sample.format_description()?;
+      if !description.is_pcm()
+        || !description.audio_is_float()
+        || description.audio_is_big_endian()
+        || description
+          .audio_format_flags()
+          .is_none_or(|flags| flags & PCM_IS_PACKED == 0)
+        || description.audio_bits_per_channel() != Some(32)
       {
         self.warn_format("not packed 32-bit float little-endian PCM");
         return None;
       }
-      let rate = asbd.sample_rate;
+      let rate = description.audio_sample_rate()?;
       if !(4_000.0..=384_000.0).contains(&rate) {
         self.warn_format("sample rate out of range");
         return None;
@@ -190,26 +164,26 @@ mod macos {
         return None;
       }
       let in_rate = rounded_rate as u32;
-      let channels = usize::try_from(asbd.channels_per_frame).unwrap_or(0);
+      let channels = usize::try_from(description.audio_channel_count()?).unwrap_or(0);
       if !(1..=8).contains(&channels) {
         self.warn_format("channel count out of range");
         return None;
       }
 
-      let interleaved = asbd.format_flags
-        & screencapturekit_sys::cm_format_description_ref::kLinearPCMFormatFlagIsNonInterleaved
-        == 0;
+      let interleaved = description
+        .audio_format_flags()
+        .is_some_and(|flags| flags & PCM_IS_NON_INTERLEAVED == 0);
       let expected_frame_bytes = if interleaved {
         channels.checked_mul(std::mem::size_of::<f32>())?
       } else {
         std::mem::size_of::<f32>()
       };
-      if usize::try_from(asbd.bytes_per_frame).ok() != Some(expected_frame_bytes) {
+      if description.audio_bytes_per_frame() != Some(expected_frame_bytes as u32) {
         self.warn_format("inconsistent bytes per frame");
         return None;
       }
 
-      let buffers = sample.get_av_audio_buffer_list();
+      let list = sample.audio_buffer_list()?;
       let format = InputFormat {
         rate: in_rate,
         channels,
@@ -219,17 +193,14 @@ mod macos {
       let mut state = self.state.lock().ok()?;
       state.prepare(format, !native);
       let samples = if native {
-        let [buffer] = buffers.as_slice() else {
-          self.warn_format("unexpected native audio buffer list");
-          return None;
-        };
-        if buffer.data.len() % expected_frame_bytes != 0 {
+        let buffer = list.get(0)?;
+        if buffer.data().len() % expected_frame_bytes != 0 {
           self.warn_format("partial native audio frame");
           return None;
         }
-        buffer.data.clone()
+        buffer.data().to_vec()
       } else {
-        let Some(planes) = decode_planes(&buffers, channels, interleaved) else {
+        let Some(planes) = decode_planes(&list, channels, interleaved) else {
           self.warn_format("inconsistent audio planes");
           return None;
         };
@@ -253,23 +224,23 @@ mod macos {
     }
   }
 
-  impl UnsafeSCStreamOutput for PcmOutput {
-    fn did_output_sample_buffer(&self, sample: Id<CMSampleBufferRef>, of_type: u8) {
-      if of_type != OUTPUT_TYPE_AUDIO {
+  impl SCStreamOutputTrait for PcmOutput {
+    fn did_output_sample_buffer(&self, sample: CMSampleBuffer, of_type: SCStreamOutputType) {
+      if !matches!(of_type, SCStreamOutputType::Audio) {
         return;
       }
       let Some(frame) = self.sample_to_raw(&sample) else {
         return;
       };
-      if self.tx.try_send(frame).is_err() {
-        // Queue full (consumer stalled) or receiver gone: drop the
-        // newest buffer rather than block the capture queue.
-        tracing::trace!("audio buffer dropped");
+      match self.bridge.send(frame) {
+        SendOutcome::Full => tracing::trace!("audio buffer dropped"),
+        SendOutcome::Closed => tracing::trace!("audio buffer dropped (consumer gone)"),
+        SendOutcome::Sent => {}
       }
     }
   }
 
-  impl ScapAudioCapture {
+  impl PlatformAudioCapture {
     /// Open an audio-only `ScreenCaptureKit` stream.
     ///
     /// The content filter pins a display (SCK requires one); system
@@ -282,8 +253,8 @@ mod macos {
     /// See [`CaptureError`] (notably [`CaptureError::PermissionDenied`]
     /// and [`CaptureError::AudioStart`]).
     pub fn new() -> Result<Self, CaptureError> {
-      crate::require_permission()?;
-      let content = UnsafeSCShareableContent::get().map_err(|e| {
+      require_permission()?;
+      let content = SCShareableContent::get().map_err(|e| {
         tracing::debug!("SCShareableContent failed: {e}");
         CaptureError::PermissionDenied
       })?;
@@ -293,36 +264,54 @@ mod macos {
         .next()
         .ok_or(CaptureError::NoDisplay)?;
 
-      let filter = UnsafeContentFilter::init(UnsafeInitParams::Display(display));
-      let config: Id<UnsafeStreamConfigurationRef> = UnsafeStreamConfiguration {
-        width: 16,
-        height: 16,
-        captures_audio: 1,
-        ..Default::default()
-      }
-      .into();
+      let filter = SCContentFilter::create().with_display(&display).build();
+      let config = SCStreamConfiguration::new()
+        .with_width(16)
+        .with_height(16)
+        .with_captures_audio(true)
+        .with_sample_rate(i32::try_from(AUDIO_SAMPLE_RATE).unwrap_or(48_000))
+        .with_channel_count(i32::from(AUDIO_CHANNELS));
 
-      let (tx, rx) = std::sync::mpsc::sync_channel(QUEUE_BUFFERS);
-      let stream = UnsafeSCStream::init(filter, config, LoggingErrorHandler);
-      stream.add_stream_output(PcmOutput::new(tx), OUTPUT_TYPE_AUDIO);
-      stream.start_capture().map_err(CaptureError::AudioStart)?;
+      let (bridge, rx) = FrameSender::bounded(QUEUE_BUFFERS);
+      let bridge = Arc::new(bridge);
+
+      // SCK can stop the stream itself (device gone, permission revoked);
+      // closing the buffer channel turns that into `CaptureError::Stopped`.
+      let error_bridge = Arc::clone(&bridge);
+      let mut stream = SCStream::new_with_delegate(
+        &filter,
+        &config,
+        ErrorHandler::new(move |error| {
+          tracing::warn!("ScreenCaptureKit audio stream stopped with error: {error}");
+          error_bridge.close();
+        }),
+      );
+      stream.add_output_handler(
+        PcmOutput::new(Arc::clone(&bridge)),
+        SCStreamOutputType::Audio,
+      );
+      stream.start_capture().map_err(|e| match e {
+        SCError::PermissionDenied(_) | SCError::NoShareableContent(_) => {
+          CaptureError::PermissionDenied
+        }
+        other => CaptureError::AudioStart(other.to_string()),
+      })?;
 
       tracing::debug!("configured ScreenCaptureKit audio capture (48 kHz stereo output)");
-      Ok(Self { rx, stream })
+      Ok(Self { rx, stream, bridge })
     }
   }
 
-  impl Drop for ScapAudioCapture {
+  impl Drop for PlatformAudioCapture {
     fn drop(&mut self) {
-      // `objc_id::Id` releases the Objective-C object but does not run
-      // the Rust `Drop` impl on the zero-sized sys wrapper.
       if let Err(error) = self.stream.stop_capture() {
         tracing::warn!("failed to stop ScreenCaptureKit audio capture: {error}");
       }
+      self.bridge.close();
     }
   }
 
-  impl crate::audio::AudioCaptureSource for ScapAudioCapture {
+  impl crate::audio::AudioCaptureSource for PlatformAudioCapture {
     fn next_audio(&mut self) -> Result<Option<RawAudioFrame>, CaptureError> {
       match self.rx.recv_timeout(POLL_INTERVAL) {
         Ok(frame) => Ok(Some(frame)),
@@ -332,29 +321,36 @@ mod macos {
     }
   }
 
-  /// Decode copied SCK buffers into one `f32` plane per channel.
+  /// Decode the sample's buffers into one `f32` plane per channel.
   fn decode_planes(
-    buffers: &[screencapturekit_sys::audio_buffer::CopiedAudioBuffer],
+    list: &screencapturekit::cm::AudioBufferList,
     channels: usize,
     interleaved: bool,
   ) -> Option<Vec<Vec<f32>>> {
     if interleaved {
-      let [buffer] = buffers else {
+      if list.num_buffers() != 1 {
         return None;
-      };
-      return deinterleave(&buffer.data, channels);
+      }
+      let buffer = list.get(0)?;
+      return deinterleave(buffer.data(), channels);
     }
-    if buffers.len() != channels || buffers.iter().any(|buffer| buffer.data.len() % 4 != 0) {
+    if list.num_buffers() != channels {
       return None;
     }
-    let frames = buffers.first()?.data.len();
-    if buffers.iter().any(|buffer| buffer.data.len() != frames) {
+    let buffers: Vec<&_> = (0..channels)
+      .map(|index| list.get(index))
+      .collect::<Option<_>>()?;
+    if buffers.iter().any(|buffer| buffer.data().len() % 4 != 0) {
+      return None;
+    }
+    let frames = buffers.first()?.data().len();
+    if buffers.iter().any(|buffer| buffer.data().len() != frames) {
       return None;
     }
     Some(
       buffers
         .iter()
-        .map(|buffer| bytes_to_f32(&buffer.data))
+        .map(|buffer| bytes_to_f32(buffer.data()))
         .collect(),
     )
   }
@@ -435,14 +431,14 @@ mod macos {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos::ScapAudioCapture;
+pub use macos::PlatformAudioCapture;
 
 /// System-audio capture on platforms without a `ScreenCaptureKit` backend.
 #[cfg(not(target_os = "macos"))]
-pub struct ScapAudioCapture;
+pub struct PlatformAudioCapture;
 
 #[cfg(not(target_os = "macos"))]
-impl ScapAudioCapture {
+impl PlatformAudioCapture {
   /// Always fails with [`CaptureError::AudioNotSupported`].
   ///
   /// # Errors
@@ -454,7 +450,7 @@ impl ScapAudioCapture {
 }
 
 #[cfg(not(target_os = "macos"))]
-impl AudioCaptureSource for ScapAudioCapture {
+impl AudioCaptureSource for PlatformAudioCapture {
   fn next_audio(&mut self) -> Result<Option<RawAudioFrame>, CaptureError> {
     Err(CaptureError::AudioNotSupported)
   }
@@ -511,7 +507,9 @@ mod tests {
   #[cfg(not(target_os = "macos"))]
   #[test]
   fn unsupported_platform_reports_audio_not_supported() {
-    let err = ScapAudioCapture::new().err().expect("stub always fails");
+    let err = PlatformAudioCapture::new()
+      .err()
+      .expect("stub always fails");
     assert!(matches!(err, CaptureError::AudioNotSupported), "{err}");
   }
 

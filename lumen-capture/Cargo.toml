@@ -9,12 +9,18 @@ license.workspace = true
 [dependencies]
 bytes.workspace = true
 lumen-core.workspace = true
-scap.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-screencapturekit-sys.workspace = true
+core-graphics.workspace = true
+screencapturekit.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-capture.workspace = true
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+windows.workspace = true
 
 [lints]
 workspace = true

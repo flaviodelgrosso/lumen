@@ -1,0 +1,11 @@
+# The ScreenCaptureKit Swift bridge dynamically links
+# `libswift_Concurrency.dylib`. The `screencapturekit` crate bakes that
+# rpath only into its own targets, so every downstream binary and test
+# that links the bridge needs the Swift runtime search path itself.
+# On macOS 12+ `/usr/lib/swift` resolves through the dyld shared cache,
+# which end-user machines have without Xcode.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/lib/swift"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/lib/swift"]

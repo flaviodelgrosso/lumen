@@ -76,12 +76,12 @@ Windows needs **no per-app screen-recording permission** — Windows.Graphics.Ca
 - **No system audio** — WGC captures video only. `lumen serve` detects the missing backend, logs `system audio is not available here; streaming video only`, and starts normally. `--no-audio` is never required on Windows.
 
 > [!NOTE]
-> The Windows build is fully gated in CI (`check`/`test`/`clippy`/`build` on `windows-latest`), but CI cannot exercise screen capture. The WGC path is wired to `scap`/`windows-capture` but **not yet validated on hardware** — run the checklist below on a real machine before trusting it.
+> The Windows build is fully gated in CI (`check`/`test`/`clippy`/`build` on `windows-latest`), but CI cannot exercise screen capture. The WGC path drives `windows-capture` directly but **not yet validated on hardware** — run the checklist below on a real machine before trusting it.
 
 <details>
 <summary><b>Windows hardware verification checklist</b></summary>
 
-1. `lumen displays` lists monitors and `lumen windows` lists app windows; printed ids round-trip into `--display` / `--window` (scap derives ids from `HMONITOR`/`HWND` truncated to `u32`).
+1. `lumen displays` lists monitors and `lumen windows` lists app windows; printed ids round-trip into `--display` / `--window` (display ids are the position in the `lumen displays` listing; window ids are the `HWND` truncated to `u32`).
 2. `lumen serve` captures primary and non-primary displays at 100%, 125% and 150% scaling (WGC sizes frames by effective DPI; padded rows are repacked by the encoder).
 3. On a display larger than **3840×2160** (5K/6K/8K), `lumen serve` exits at startup with `display <W>x<H> exceeds the 3840x2160 encoder limit…`. The WGC backend cannot scale — this is expected, not a bug.
 4. Window capture of a normal (non-elevated) window, including a window on a secondary monitor with different DPI.
@@ -89,7 +89,7 @@ Windows needs **no per-app screen-recording permission** — Windows.Graphics.Ca
 6. A Chromium viewer on another device connects over mDNS (accept the firewall prompt on the **Private** profile first).
 7. Ctrl+C shuts the server down cleanly.
 
-If an item fails, the fix belongs in the platform-gated code in `lumen-capture` or upstream in `scap-vc`; the macOS path is unaffected either way.
+If an item fails, the fix belongs in the platform-gated code in `lumen-capture` or upstream in `windows-capture`; the macOS path is unaffected either way.
 
 </details>
 
@@ -127,7 +127,7 @@ lumen serve --no-audio --auto-accept              # quick, unattended video-only
 
 ### Capture
 
-`scap` grabs BGRA frames at the target FPS — from ScreenCaptureKit on macOS, from Windows.Graphics.Capture on Windows. The pipeline keeps only the latest frame, so a slow encoder never builds a queue. Displays larger than the encoder's 3840×2160 ceiling are scaled down by ScreenCaptureKit itself — zero CPU cost — to the nearest encodable size, aspect ratio preserved. On Windows, frames whose D3D11 row pitch exceeds the logical width keep their logical size; the encoder repacks the padded rows.
+Native backends grab BGRA frames — `ScreenCaptureKit` via the `screencapturekit` crate on macOS, `Windows.Graphics.Capture` via the `windows-capture` crate on Windows (engine on a dedicated thread, frames over a bounded channel). The pipeline keeps only the latest frame, so a slow encoder never builds a queue. On macOS, targets outside the encoder's bounds are floored to even and scaled to the nearest encodable size — aspect ratio preserved — by ScreenCaptureKit itself, zero CPU cost. WGC cannot scale: oversized displays fail at startup, and frames whose D3D11 row pitch exceeds the logical width keep their logical size; the encoder repacks the padded rows.
 
 ### Encode
 
@@ -246,13 +246,13 @@ A browser on the **same Mac** connects over loopback regardless, which is why lo
 A loopback-bound ICE socket is being used to reach a LAN peer. `lumen` binds `127.0.0.1:0` only for a viewer that is itself on loopback, so this shouldn't appear — if it does, the viewer is likely being mis-detected (e.g. behind a proxy that makes the connection look local).
 
 **`display size … is not encodable`**
-A capture larger than 3840×2160 that scap cannot scale (see [Capture](#capture)). Pick a smaller `--display` target or a window.
+A capture larger than 3840×2160 that Windows Graphics Capture cannot scale (see [Capture](#capture)). Pick a smaller `--display` target or a window.
 
 ## Development
 
 ```
 lumen-core      shared types, config, errors
-lumen-capture   scap video (SCK / WGC) + SCK system-audio + fake sources (tests)
+lumen-capture   native video (SCK / WGC) + SCK system-audio + fake sources (tests)
 lumen-encoder   openh264 + opus wrappers + fake encoders (tests)
 lumen-webrtc    per-viewer peer connection (video + audio tracks)
 lumen-session   token, approval, user-agent parsing
@@ -281,10 +281,9 @@ cargo check -p lumen-core -p lumen-capture -p lumen-session -p lumen-network \
   --all-targets --locked --target x86_64-pc-windows-msvc
 ```
 
-The crates behind C toolchains (`lumen-encoder`'s `opus`, `lumen-webrtc`'s `ring`) can't cross-compile from macOS and are validated on the runner only. `windows-capture` (scap's WGC backend) is pinned to `1.4.4` in `Cargo.lock` — its `Settings::new` signature changed incompatibly in 1.5; keep the pin on `cargo update` (see the comment in `Cargo.toml`).
+The crates behind C toolchains (`lumen-encoder`'s `opus`, `lumen-webrtc`'s `ring`) can't cross-compile from macOS and are validated on the runner only.
 
 > [!NOTE]
 >
-> - `lumen` builds against `scap-vc`, a patched fork of `scap` (cross-process macOS window capture, `Result`-based start/stop). Its Windows backend only compiles against `windows-capture` 1.4.x.
-> - `cargo clippy` may report a future-incompatibility warning for `block v0.1.6` (a transitive dependency of `scap`'s `objc` usage). It's upstream, harmless today, and not actionable here.
+> - `screencapturekit` ships a Swift bridge; its `libswift_Concurrency.dylib` dependency is resolved through the `/usr/lib/swift` rpath that `.cargo/config.toml` adds for macOS targets (the crate's own build script only bakes it into its own targets, not downstream binaries).
 > - `openh264` loads a prebuilt Cisco library at runtime; the `openh264` crate vendors it under a BSD-2-style license.

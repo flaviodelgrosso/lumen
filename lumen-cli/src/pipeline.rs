@@ -105,7 +105,7 @@ pub fn start(
   let (frames_tx, _) = broadcast::channel::<Arc<EncodedFrame>>(capacity as usize);
   let (raw_tx, mut raw_rx) = watch::channel(Some(first));
 
-  // ── Capture task (blocking thread: scap blocks on a channel) ──
+  // ── Capture task (blocking thread: next_frame waits on the native engine) ──
   let capture_stats = Arc::clone(&stats);
   let capture_shutdown = shutdown.clone();
   let capture = tokio::task::spawn_blocking(move || {

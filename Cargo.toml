@@ -44,17 +44,19 @@ qrcode = "0.14"
 opus = "0.4"
 rtc = "0.20"
 rust-embed = "8.12"
-# scap-vc: patched fork of scap 0.0.8 — cross-process macOS window capture
-# (upstream sizes windows via NSApp, which only sees the calling process's
-# own windows, so any other app's window gets a 0x0 SCStreamConfiguration and
-# start_capture panics) and Result-based start/stop instead of panics.
-#
-# scap-vc's Windows backend only compiles against `windows-capture` 1.4.x
-# (1.5+ added args to `Settings::new`; 1.3.x predates `capture::Context`
-# and `as_nopadding_buffer`). The workspace Cargo.lock pins 1.4.4 — keep it
-# there: `cargo update -p windows-capture --precise 1.4.4` if it drifts.
-scap = { package = "scap-vc", version = "0.1.0" }
-screencapturekit-sys = "0.2.8"
+# macOS video + system audio: safe ScreenCaptureKit bindings (Swift bridge,
+# macOS 13+). The crate pins BGRA output at construction and depends only on
+# the thin apple-cf / apple-metal binding crates.
+screencapturekit = "10"
+# Only for the TCC screen-recording permission gate (preflight/request); the
+# `screencapturekit` crate itself has no permission helper.
+core-graphics = "0.25"
+# Windows video: direct Windows.Graphics.Capture bindings (engine runs on its
+# own thread, frames delivered over a bounded channel).
+windows-capture = "2"
+# Only for tests: constructing `windows::core::Error` (with the exact
+# `E_ACCESSDENIED` HRESULT) to pin the elevated-window error mapping.
+windows = "0.62"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
@@ -75,10 +77,10 @@ url = "2.5"
 webrtc = "0.20"
 
 [workspace.lints.rust]
-# `deny` (not `forbid`) so the one audited exception — the Windows-only
-# `unsafe impl Send for ScapCapture` (raw HWND/HMONITOR handles crossing a
-# thread boundary, the same guarantee `windows-capture` itself makes) — can
-# carry a scoped `#[expect]`. Everything else stays hard-error under `-D warnings`.
+# `deny` (not `forbid`) so the one audited exception — the macOS-only unsafe
+# block that reads a locked `CVPixelBuffer`'s pixels (the `apple-cf` guard
+# exposes its slice only as an `unsafe fn`) — can carry a scoped `#[expect]`.
+# Everything else stays hard-error under `-D warnings`.
 unsafe_code = "deny"
 
 [workspace.lints.clippy]

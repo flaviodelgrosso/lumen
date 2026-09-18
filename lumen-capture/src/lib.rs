@@ -1,24 +1,24 @@
 //! Display/window enumeration, screen capture, and system-audio capture
 //! behind portable traits.
 //!
-//! The production implementation wraps [`scap`] (`ScreenCaptureKit` /
-//! Windows.Graphics.Capture / `PipeWire`). Tests use [`FakeCaptureSource`] so
-//! they never need display hardware; [`FakeAudioCapture`] plays the same
-//! role for audio.
+//! Each platform drives its native capture API directly: macOS uses
+//! `ScreenCaptureKit` (the `screencapturekit` crate), Windows uses
+//! `Windows.Graphics.Capture` (the `windows-capture` crate), and other
+//! platforms report [`CaptureError::NotSupported`] so the crate still builds
+//! for them. Tests use [`FakeCaptureSource`] / [`FakeAudioCapture`] so they
+//! never need display hardware.
 //!
-//! Note: the `scap` dependency is `scap-vc`, a patched fork of `scap` 0.0.8
-//! that captures windows across processes (upstream sizes windows through
-//! `NSApp`, which only sees the calling process's own windows) and returns
-//! `Result` from start/stop instead of panicking. `scap` keeps its `targets`
-//! module private and exposes only the `Target` enum; display/window metadata
-//! is therefore read through pattern matching on the re-exported variants,
-//! and output sizes come from the public `get_output_frame_size`.
+//! Platform types stay private to this crate: consumers see only
+//! [`PlatformCapture`], [`PlatformAudioCapture`], [`CaptureSource`],
+//! [`AudioCaptureSource`], [`FakeCaptureSource`], [`FakeAudioCapture`], and
+//! the enumeration functions.
 
+use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use lumen_core::{Dimensions, PixelFormat, RawFrame};
-use scap::{Target, capturer::Options, capturer::Resolution, frame::Frame, frame::FrameType};
 use thiserror::Error;
 
 pub mod audio;
@@ -27,7 +27,20 @@ pub mod audio;
 #[cfg(target_os = "macos")]
 mod resample;
 
-pub use audio::{AudioCaptureSource, FakeAudioCapture, ScapAudioCapture};
+#[cfg(target_os = "macos")]
+#[path = "macos.rs"]
+mod backend;
+#[cfg(target_os = "windows")]
+#[path = "windows.rs"]
+mod backend;
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[path = "unsupported.rs"]
+mod backend;
+
+pub use audio::{AudioCaptureSource, FakeAudioCapture, PlatformAudioCapture};
+pub use backend::PlatformCapture;
+
+pub(crate) use backend::require_permission;
 
 /// Tail appended to [`CaptureError::PermissionDenied`] with the guidance
 /// that actually applies on the current OS.
@@ -131,17 +144,6 @@ pub struct WindowInfo {
   pub title: String,
 }
 
-fn output_size_for(target: &Target) -> Dimensions {
-  let options = Options {
-    fps: 30,
-    target: Some(target.clone()),
-    output_type: FrameType::BGRAFrame,
-    ..Default::default()
-  };
-  let [width, height] = scap::capturer::get_output_frame_size(&options);
-  Dimensions::new(width, height)
-}
-
 /// List capturable displays.
 ///
 /// # Errors
@@ -149,20 +151,7 @@ fn output_size_for(target: &Target) -> Dimensions {
 /// See [`CaptureError`] (notably [`CaptureError::PermissionDenied`] with
 /// corrective guidance on macOS).
 pub fn list_displays() -> Result<Vec<DisplayInfo>, CaptureError> {
-  require_permission()?;
-  Ok(
-    scap::get_all_targets()
-      .into_iter()
-      .filter_map(|target| match &target {
-        Target::Display(display) => Some(DisplayInfo {
-          id: display.id,
-          title: display.title.clone(),
-          dimensions: output_size_for(&target),
-        }),
-        Target::Window(_) => None,
-      })
-      .collect(),
-  )
+  backend::list_displays()
 }
 
 /// List capturable windows.
@@ -171,288 +160,176 @@ pub fn list_displays() -> Result<Vec<DisplayInfo>, CaptureError> {
 ///
 /// See [`CaptureError`] (notably [`CaptureError::PermissionDenied`]).
 pub fn list_windows() -> Result<Vec<WindowInfo>, CaptureError> {
-  require_permission()?;
-  Ok(
-    scap::get_all_targets()
-      .into_iter()
-      .filter_map(|target| match target {
-        Target::Window(window) => Some(WindowInfo {
-          id: window.id,
-          title: window.title,
-        }),
-        Target::Display(_) => None,
-      })
-      .collect(),
-  )
+  backend::list_windows()
 }
 
-/// Guard `scap` calls that abort the process when the OS denies capture.
+/// Whether `native` fits inside [`Dimensions::MAX_ENCODABLE`] unchanged.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) const fn fits_encodable(native: Dimensions) -> bool {
+  native.width <= Dimensions::MAX_ENCODABLE.width
+    && native.height <= Dimensions::MAX_ENCODABLE.height
+}
+
+/// Smallest side the H.264 encoder accepts.
+pub(crate) const MIN_ENCODABLE: u32 = 16;
+
+/// The even size that keeps `native` within the encoder's bounds while
+/// preserving its aspect ratio as far as possible.
 ///
-/// On macOS this covers the TCC screen-recording prompt; on Windows `scap`
-/// treats capture as always permitted (WGC has no per-app permission), so the
-/// guard reduces to the [`CaptureError::NotSupported`] check.
-pub(crate) fn require_permission() -> Result<(), CaptureError> {
-  if !scap::is_supported() {
-    return Err(CaptureError::NotSupported);
+/// Sizes are always floored to even numbers because H.264 chroma sampling
+/// requires even dimensions (e.g. a 1728x1117 logical display becomes
+/// 1728x1116), and Retina displays above the 4K ceiling are scaled down;
+/// `ScreenCaptureKit` performs the scaling natively, so it costs no CPU in
+/// our pipeline. Degenerate targets are raised to the encoder's 16x16
+/// floor.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn fit_encodable(native: Dimensions) -> Dimensions {
+  let max = Dimensions::MAX_ENCODABLE;
+  let scale = (f64::from(max.width) / f64::from(native.width.max(1)))
+    .min(f64::from(max.height) / f64::from(native.height.max(1)))
+    .min(1.0);
+  #[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the scale is at most 1.0, so each product is bounded by the \
+              matching `Dimensions::MAX_ENCODABLE` side"
+  )]
+  let fit_side = |side: u32, limit: u32| -> u32 {
+    // Truncating cast floors the product; masking the low bit rounds down
+    // to an even number; the clamp keeps the result encodable.
+    ((f64::from(side) * scale) as u32 & !1).clamp(MIN_ENCODABLE, limit)
+  };
+  let fitted = Dimensions::new(
+    fit_side(native.width, max.width),
+    fit_side(native.height, max.height),
+  );
+  if fitted != native {
+    tracing::info!(
+      native = %native,
+      fitted = %fitted,
+      "adjusted capture size to fit the encoder"
+    );
   }
-  if !scap::has_permission() && !scap::request_permission() {
-    return Err(CaptureError::PermissionDenied);
-  }
-  Ok(())
+  fitted
 }
 
-/// Full-display capture backed by `scap`.
-pub struct ScapCapture {
-  capturer: scap::capturer::Capturer,
-  dimensions: Dimensions,
-  started: bool,
-}
-
-/// On Windows `scap`'s `Capturer` transitively holds a raw `HWND`/`HMONITOR`
-/// (a `*mut c_void`, hence auto-`!Send`). These are process-wide kernel
-/// handles, valid from any thread, and `windows-capture` — the backend that
-/// actually drives the capture thread — already makes this exact promise for
-/// the handles it stores (`unsafe impl Send for Window`/`Monitor`). Moving a
-/// built `Capturer` onto the pipeline's blocking thread is therefore sound.
-#[cfg(target_os = "windows")]
-#[expect(unsafe_code, reason = "raw window handles are process-wide")]
-unsafe impl Send for ScapCapture {}
-
-impl ScapCapture {
-  /// Build a full-display capturer.
-  ///
-  /// `display_id = None` selects the primary display.
-  ///
-  /// # Errors
-  ///
-  /// See [`CaptureError`].
-  pub fn for_display(display_id: Option<u32>, fps: u32) -> Result<Self, CaptureError> {
-    require_permission()?;
-    let targets = scap::get_all_targets();
-    if !targets.iter().any(|t| matches!(t, Target::Display(_))) {
-      return Err(CaptureError::NoDisplay);
-    }
-
-    let target = match display_id {
-      Some(id) => targets
-        .into_iter()
-        .find(|t| matches!(t, Target::Display(d) if d.id == id))
-        .ok_or(CaptureError::DisplayNotFound(id))?,
-      // None → scap captures the primary display.
-      None => return Self::build(None, fps),
-    };
-    Self::build(Some(target), fps)
-  }
-
-  /// Build a window capturer.
-  ///
-  /// # Errors
-  ///
-  /// See [`CaptureError`].
-  pub fn for_window(window_id: u32, fps: u32) -> Result<Self, CaptureError> {
-    require_permission()?;
-    let target = scap::get_all_targets()
-      .into_iter()
-      .find(|t| matches!(t, Target::Window(w) if w.id == window_id))
-      .ok_or(CaptureError::WindowNotFound(window_id))?;
-    Self::build(Some(target), fps)
-  }
-
-  fn build(target: Option<Target>, fps: u32) -> Result<Self, CaptureError> {
-    let options = Options {
-      fps: fps.clamp(1, 240),
-      target,
-      show_cursor: true,
-      show_highlight: false,
-      output_type: FrameType::BGRAFrame,
-      ..Default::default()
-    };
-    let options = Self::fit_encodable(options);
-    // Windows: the WGC engine crops frames at the full target size and
-    // ignores `output_resolution` (unlike ScreenCaptureKit, it cannot scale
-    // natively). If the fit probe fell below `Captured`, the display is
-    // larger than the encoder ceiling and every frame would mismatch the
-    // configured size — fail fast with the real reason instead.
-    #[cfg(target_os = "windows")]
-    if !matches!(options.output_resolution, Resolution::Captured) {
-      let mut probe = options.clone();
-      probe.output_resolution = Resolution::Captured;
-      let [w, h] = scap::capturer::get_output_frame_size(&probe);
-      return Err(CaptureError::StartFailed(format!(
-        "display {w}x{h} exceeds the 3840x2160 encoder limit and Windows \
-         capture cannot scale it; capture a window or lower the display \
-         resolution"
-      )));
-    }
-    let [width, height] = scap::capturer::get_output_frame_size(&options);
-    let capturer = scap::capturer::Capturer::build(options).map_err(|e| match e {
-      scap::capturer::CapturerBuildError::NotSupported => CaptureError::NotSupported,
-      scap::capturer::CapturerBuildError::PermissionNotGranted => CaptureError::PermissionDenied,
-    })?;
-    tracing::debug!(width, height, "configured scap display capture");
-    Ok(Self {
-      capturer,
-      dimensions: Dimensions::new(width, height),
-      started: false,
-    })
-  }
-
-  /// Pick the largest `scap` output preset that keeps the capture within
-  /// [`Dimensions::MAX_ENCODABLE`].
-  ///
-  /// Retina displays exceed the encoder's 4K ceiling (e.g. 3456x2234);
-  /// `ScreenCaptureKit` then scales the frames natively, so downscaling
-  /// costs no CPU in our pipeline. `get_output_frame_size` is the exact
-  /// sizing function the scap engine uses, so the probe cannot drift.
-  ///
-  /// The Windows backend honors a preset only in the size it *reports*, not
-  /// in the frames it crops out (see the guard in [`Self::build`]), so a
-  /// non-`Captured` result there is an unsupported target, not a downscale.
-  fn fit_encodable(mut options: Options) -> Options {
-    let max = Dimensions::MAX_ENCODABLE;
-    for resolution in [
-      Resolution::Captured,
-      Resolution::_2160p,
-      Resolution::_1440p,
-      Resolution::_1080p,
-      Resolution::_720p,
-      Resolution::_480p,
-    ] {
-      options.output_resolution = resolution;
-      let [w, h] = scap::capturer::get_output_frame_size(&options);
-      if w <= max.width && h <= max.height {
-        if !matches!(resolution, Resolution::Captured) {
-          tracing::info!(
-              resolution = ?resolution,
-              width = w,
-              height = h,
-              "scaling capture down to fit the encoder"
-          );
-        }
-        return options;
-      }
-    }
-    options
-  }
-
-  /// Start the underlying capture engine.
-  ///
-  /// # Errors
-  ///
-  /// See [`CaptureError::StartFailed`].
-  pub fn start(&mut self) -> Result<(), CaptureError> {
-    self
-      .capturer
-      .start_capture()
-      .map_err(CaptureError::StartFailed)?;
-    self.started = true;
-    Ok(())
-  }
-}
-
-impl Drop for ScapCapture {
-  fn drop(&mut self) {
-    // Never stop a stream that never started: the engine panics on a
-    // missing stream, and a panic in a destructor aborts the process.
-    if self.started {
-      if let Err(error) = self.capturer.stop_capture() {
-        tracing::debug!(error, "failed to stop scap capture");
-      }
-    }
-  }
-}
-
-impl CaptureSource for ScapCapture {
-  fn dimensions(&self) -> Dimensions {
-    self.dimensions
-  }
-
-  fn next_frame(&mut self) -> Result<RawFrame, CaptureError> {
-    loop {
-      match self.capturer.get_next_frame() {
-        Ok(Frame::BGRA(frame)) => {
-          // scap emits zero-size placeholder frames when the
-          // display is idle; skip them.
-          if frame.width == 0 || frame.height == 0 || frame.data.is_empty() {
-            continue;
-          }
-          return bgra_to_raw(frame);
-        }
-        Ok(other) => {
-          tracing::trace!(?other, "discarding non-BGRA frame");
-        }
-        Err(std::sync::mpsc::RecvError) => return Err(CaptureError::Stopped),
-      }
-    }
-  }
-}
-
-/// Convert a scap BGRA frame, deriving the true stride from the buffer
-/// length (scap's reported width can disagree with `bytes_per_row`).
-#[cfg(not(target_os = "windows"))]
-fn bgra_to_raw(frame: scap::frame::BGRAFrame) -> Result<RawFrame, CaptureError> {
-  let height = u32::try_from(frame.height).unwrap_or(0).max(1);
-  let data_len = frame.data.len();
-  let height_usize = usize::try_from(height).unwrap_or(1);
-  if data_len == 0 || data_len % height_usize != 0 {
+/// Build a [`RawFrame`] from a BGRA buffer with an explicit row stride.
+///
+/// Both native backends hand over pitch-padded buffers (`CVPixelBuffer`
+/// `bytesPerRow` on macOS, D3D11 `RowPitch` on Windows), so the logical
+/// size is authoritative and the stride is carried through to the encoder,
+/// which repacks padded rows. Every inconsistency is reported as
+/// [`CaptureError::MalformedFrame`]; nothing here can panic.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+fn bgra_to_raw(
+  width: u32,
+  height: u32,
+  stride: u32,
+  data: Vec<u8>,
+) -> Result<RawFrame, CaptureError> {
+  if width == 0 || height == 0 {
     return Err(CaptureError::MalformedFrame(format!(
-      "{data_len} bytes for {height} rows"
+      "zero-size frame {width}x{height}"
     )));
   }
-  let row_bytes = data_len / height_usize;
-  if row_bytes == 0 || row_bytes % 4 != 0 {
+  if stride == 0 || stride % 4 != 0 {
     return Err(CaptureError::MalformedFrame(format!(
-      "row size {row_bytes} not a multiple of 4"
+      "row stride {stride} not a positive multiple of 4"
     )));
   }
-  let width = u32::try_from(row_bytes / 4)
-    .map_err(|_| CaptureError::MalformedFrame(format!("row of {row_bytes} B too wide")))?;
-  Ok(RawFrame {
-    width,
-    height,
-    stride: u32::try_from(row_bytes)
-      .map_err(|_| CaptureError::MalformedFrame(format!("row of {row_bytes} B too wide")))?,
-    format: PixelFormat::Bgra8,
-    pixels: Bytes::from(frame.data),
-    captured_at: Instant::now(),
-  })
-}
-
-/// Windows variant: `windows-capture` hands over `RowPitch`-padded buffers
-/// whose logical size is authoritative, so the frame's own `width` is kept
-/// and the stride is derived from the buffer length. The encoder repacks
-/// padded rows; a zero-copy tight copy is avoided because padded pitches
-/// are the common case (D3D11 aligns rows).
-#[cfg(target_os = "windows")]
-fn bgra_to_raw(frame: scap::frame::BGRAFrame) -> Result<RawFrame, CaptureError> {
-  let width = u32::try_from(frame.width).unwrap_or(0);
-  let height = u32::try_from(frame.height).unwrap_or(0).max(1);
-  let data_len = frame.data.len();
-  let height_usize = usize::try_from(height).unwrap_or(1);
-  if width == 0 || data_len == 0 || data_len % height_usize != 0 {
-    return Err(CaptureError::MalformedFrame(format!(
-      "{data_len} bytes for {height} rows"
-    )));
-  }
-  let row_bytes = u32::try_from(data_len / height_usize).map_err(|_| {
-    CaptureError::MalformedFrame(format!("row of {} B too wide", data_len / height_usize))
+  let expected = usize::try_from(
+    u64::from(stride)
+      .checked_mul(u64::from(height))
+      .ok_or_else(|| {
+        CaptureError::MalformedFrame(format!("stride {stride} x {height} rows overflows"))
+      })?,
+  )
+  .map_err(|_| {
+    CaptureError::MalformedFrame(format!("{stride}x{height} buffer exceeds memory size"))
   })?;
+  if data.len() != expected {
+    return Err(CaptureError::MalformedFrame(format!(
+      "{} bytes for {height} rows at stride {stride}",
+      data.len()
+    )));
+  }
   let row_pixels = width
     .checked_mul(4)
     .ok_or_else(|| CaptureError::MalformedFrame(format!("width {width} too wide")))?;
-  if row_bytes < row_pixels {
+  if stride < row_pixels {
     return Err(CaptureError::MalformedFrame(format!(
-      "row pitch {row_bytes} B below width {width} px"
+      "row stride {stride} B below width {width} px"
     )));
   }
   Ok(RawFrame {
     width,
     height,
-    stride: row_bytes,
+    stride,
     format: PixelFormat::Bgra8,
-    pixels: Bytes::from(frame.data),
+    pixels: Bytes::from(data),
     captured_at: Instant::now(),
   })
+}
+
+/// Bounded producer side of the native-engine → pipeline frame hop.
+///
+/// The native capture callbacks (SCK dispatch queues, the WGC engine thread)
+/// share one `Arc<Self>`; [`Self::close`] drops the sole sender so the
+/// consumer's blocking [`Receiver::recv`] wakes with `Disconnected`, which
+/// the backends map to [`CaptureError::Stopped`].
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+pub(crate) struct FrameSender<T> {
+  tx: Mutex<Option<SyncSender<T>>>,
+}
+
+/// What happened to a frame handed to [`FrameSender::send`].
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SendOutcome {
+  /// The frame entered the queue.
+  Sent,
+  /// The queue was full; the frame was dropped. For live capture, latency
+  /// beats backlog — the pipeline keeps only the latest frame anyway.
+  Full,
+  /// The consumer is gone (or the channel was closed).
+  Closed,
+}
+
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+impl<T> FrameSender<T> {
+  /// Create a bounded channel; the [`Receiver`] side backs the blocking
+  /// [`CaptureSource::next_frame`] / [`AudioCaptureSource::next_audio`] API.
+  pub(crate) fn bounded(capacity: usize) -> (Self, Receiver<T>) {
+    let (tx, rx) = std::sync::mpsc::sync_channel(capacity);
+    (
+      Self {
+        tx: Mutex::new(Some(tx)),
+      },
+      rx,
+    )
+  }
+
+  /// Non-blocking send; never stalls the capture callback.
+  pub(crate) fn send(&self, item: T) -> SendOutcome {
+    let Ok(guard) = self.tx.lock() else {
+      return SendOutcome::Closed;
+    };
+    let Some(tx) = guard.as_ref() else {
+      return SendOutcome::Closed;
+    };
+    match tx.try_send(item) {
+      Ok(()) => SendOutcome::Sent,
+      Err(TrySendError::Full(_)) => SendOutcome::Full,
+      Err(TrySendError::Disconnected(_)) => SendOutcome::Closed,
+    }
+  }
+
+  /// Drop the sender; wakes the consumer with `Disconnected`.
+  pub(crate) fn close(&self) {
+    if let Ok(mut guard) = self.tx.lock() {
+      drop(guard.take());
+    }
+  }
 }
 
 /// A synthetic capture source for tests and headless runs.
@@ -520,25 +397,170 @@ impl CaptureSource for FakeCaptureSource {
 mod tests {
   use super::*;
 
-  /// The chosen preset must always keep the primary display's output
-  /// within the encoder's limits (real display; no capture permission
-  /// needed — sizing only reads CoreGraphics metadata).
+  // ── encoder-fit policy ──
+
   #[test]
-  #[cfg(target_os = "macos")]
-  fn fit_encodable_stays_within_encoder_limits() {
-    let options = Options {
-      fps: 30,
-      output_type: FrameType::BGRAFrame,
-      ..Default::default()
-    };
-    let options = ScapCapture::fit_encodable(options);
-    let [w, h] = scap::capturer::get_output_frame_size(&options);
+  fn native_size_within_limit_is_untouched() {
+    let native = Dimensions::new(1920, 1080);
+    assert_eq!(fit_encodable(native), native);
+    assert!(fits_encodable(native));
+  }
+
+  #[test]
+  fn max_encodable_boundary_is_untouched() {
+    let boundary = Dimensions::MAX_ENCODABLE;
+    assert!(fits_encodable(boundary));
+    assert_eq!(fit_encodable(boundary), boundary);
+  }
+
+  /// Retina-class displays (3456x2234) must land inside the 4K ceiling with
+  /// the aspect ratio preserved — the exact case the old preset ladder
+  /// handled by snapping to 2160p.
+  #[test]
+  fn retina_display_fits_within_encoder_limits() {
+    let fitted = fit_encodable(Dimensions::new(3456, 2234));
     let max = Dimensions::MAX_ENCODABLE;
     assert!(
-      w <= max.width && h <= max.height,
-      "primary display {w}x{h} exceeds encodable limit"
+      fitted.width <= max.width && fitted.height <= max.height,
+      "{fitted}"
+    );
+    assert_eq!(fitted.width % 2, 0);
+    assert_eq!(fitted.height % 2, 0);
+    let native_ratio = 3456.0 / 2234.0;
+    let fitted_ratio = f64::from(fitted.width) / f64::from(fitted.height);
+    assert!(
+      (native_ratio - fitted_ratio).abs() / native_ratio < 0.01,
+      "aspect ratio drifted: {fitted}"
     );
   }
+
+  /// 8K (7680x4320) fits on both axes at the same scale.
+  #[test]
+  fn oversized_display_fits_and_stays_even() {
+    let fitted = fit_encodable(Dimensions::new(7680, 4320));
+    assert_eq!(fitted, Dimensions::new(3840, 2160));
+  }
+
+  #[test]
+  fn extreme_aspect_ratio_keeps_positive_even_output() {
+    // 5120x640 ultrawide strip: height is untouched, width scales.
+    let fitted = fit_encodable(Dimensions::new(5120, 640));
+    assert_eq!(fitted, Dimensions::new(3840, 480));
+    // An absurdly tall strip still produces encoder-legal output.
+    let tall = fit_encodable(Dimensions::new(4, 8000));
+    assert!(tall.width >= MIN_ENCODABLE && tall.height >= MIN_ENCODABLE);
+    assert_eq!(tall.width % 2, 0);
+    assert_eq!(tall.height % 2, 0);
+  }
+
+  /// A logical (scaled) display size like 1728x1117 is in range but odd;
+  /// it must be floored to even without any downscaling.
+  #[test]
+  fn odd_in_range_size_is_floored_to_even() {
+    assert_eq!(
+      fit_encodable(Dimensions::new(1728, 1117)),
+      Dimensions::new(1728, 1116)
+    );
+  }
+
+  /// Degenerate targets are raised to the encoder floor instead of being
+  /// rejected later.
+  #[test]
+  fn degenerate_size_is_raised_to_encoder_floor() {
+    assert_eq!(
+      fit_encodable(Dimensions::new(10, 10)),
+      Dimensions::new(16, 16)
+    );
+    assert_eq!(
+      fit_encodable(Dimensions::new(0, 0)),
+      Dimensions::new(16, 16)
+    );
+  }
+
+  // ── frame conversion policy ──
+
+  #[test]
+  fn malformed_bgra_is_rejected() {
+    // 10 bytes cannot be 3 rows of any 4-aligned stride for a 4 px width.
+    assert!(matches!(
+      bgra_to_raw(4, 3, 16, vec![0_u8; 10]),
+      Err(CaptureError::MalformedFrame(_))
+    ));
+    // Zero-size frames are invalid, not deliverable.
+    assert!(matches!(
+      bgra_to_raw(0, 4, 16, vec![0_u8; 64]),
+      Err(CaptureError::MalformedFrame(_))
+    ));
+    // A stride below the logical width would let the encoder read past rows.
+    assert!(matches!(
+      bgra_to_raw(4, 4, 8, vec![0_u8; 32]),
+      Err(CaptureError::MalformedFrame(_))
+    ));
+    // A stride that is not a multiple of 4 cannot hold BGRA pixels.
+    assert!(matches!(
+      bgra_to_raw(2, 4, 7, vec![0_u8; 28]),
+      Err(CaptureError::MalformedFrame(_))
+    ));
+  }
+
+  /// `CVPixelBuffer`/D3D11 hand over pitch-padded buffers; the logical width
+  /// must survive and the pitch must become the stride (the encoder repacks
+  /// padded rows).
+  #[test]
+  fn padded_pitch_keeps_logical_width() {
+    // 4 rows at pitch 12 B for a 2 px (8 B) logical width.
+    let raw = bgra_to_raw(2, 4, 12, vec![7_u8; 48]).unwrap();
+    assert_eq!(raw.width, 2);
+    assert_eq!(raw.height, 4);
+    assert_eq!(raw.stride, 12);
+    assert_eq!(raw.pixels.len(), 48);
+  }
+
+  #[test]
+  fn tight_pitch_round_trips() {
+    let raw = bgra_to_raw(2, 4, 8, vec![7_u8; 32]).unwrap();
+    assert_eq!(raw.width, 2);
+    assert_eq!(raw.stride, 8);
+    assert_eq!(raw.stride, raw.width * 4);
+    assert_eq!(raw.dimensions(), Dimensions::new(2, 4));
+  }
+
+  // ── frame channel plumbing ──
+
+  #[test]
+  fn frame_channel_delivers_and_wakes_consumer_on_close() {
+    let (tx, rx) = FrameSender::<RawFrame>::bounded(1);
+    let frame = bgra_to_raw(1, 1, 4, vec![0_u8; 4]).unwrap();
+    assert_eq!(tx.send(frame.clone()), SendOutcome::Sent);
+    let received = rx.recv().expect("frame delivered");
+    assert_eq!(received.dimensions(), frame.dimensions());
+
+    tx.close();
+    assert_eq!(tx.send(frame), SendOutcome::Closed);
+    assert!(
+      rx.recv().is_err(),
+      "a closed channel must wake the consumer with Disconnected"
+    );
+  }
+
+  #[test]
+  fn frame_channel_drops_on_full_without_blocking() {
+    let (tx, _rx) = FrameSender::<RawFrame>::bounded(1);
+    let frame = bgra_to_raw(1, 1, 4, vec![0_u8; 4]).unwrap();
+    assert_eq!(tx.send(frame.clone()), SendOutcome::Sent);
+    // Queue full: the newest frame is dropped, the callback never stalls.
+    assert_eq!(tx.send(frame), SendOutcome::Full);
+  }
+
+  #[test]
+  fn frame_channel_send_after_consumer_gone_is_closed() {
+    let (tx, rx) = FrameSender::<RawFrame>::bounded(1);
+    drop(rx);
+    let frame = bgra_to_raw(1, 1, 4, vec![0_u8; 4]).unwrap();
+    assert_eq!(tx.send(frame), SendOutcome::Closed);
+  }
+
+  // ── fake source (headless CI) ──
 
   #[test]
   fn fake_source_yields_consistent_frames() {
@@ -550,86 +572,6 @@ mod tests {
     assert_eq!(frame.format, PixelFormat::Bgra8);
     let second = fake.next_frame().unwrap();
     assert_eq!(second.pixels.len(), frame.pixels.len());
-  }
-
-  #[test]
-  fn malformed_bgra_is_rejected() {
-    let bad = scap::frame::BGRAFrame {
-      display_time: 0,
-      width: 4,
-      height: 3,
-      data: vec![0_u8; 10],
-    };
-    assert!(matches!(
-      bgra_to_raw(bad),
-      Err(CaptureError::MalformedFrame(_))
-    ));
-  }
-
-  #[test]
-  #[cfg(not(target_os = "windows"))]
-  fn stride_is_derived_from_buffer() {
-    // 4 rows of 8 bytes = 2 pixels wide despite width field saying 4.
-    let f = scap::frame::BGRAFrame {
-      display_time: 0,
-      width: 4,
-      height: 4,
-      data: vec![7_u8; 32],
-    };
-    let raw = bgra_to_raw(f).unwrap();
-    assert_eq!(raw.width, 2);
-    assert_eq!(raw.height, 4);
-    assert_eq!(raw.stride, 8);
-  }
-
-  /// `windows-capture` hands over `RowPitch`-padded buffers; the logical
-  /// width must survive and the pitch must become the stride (the encoder
-  /// repacks padded rows).
-  #[test]
-  #[cfg(target_os = "windows")]
-  fn padded_windows_frame_keeps_logical_width() {
-    // 4 rows at pitch 12 B for a 2 px (8 B) logical width.
-    let f = scap::frame::BGRAFrame {
-      display_time: 0,
-      width: 2,
-      height: 4,
-      data: vec![7_u8; 48],
-    };
-    let raw = bgra_to_raw(f).unwrap();
-    assert_eq!(raw.width, 2);
-    assert_eq!(raw.height, 4);
-    assert_eq!(raw.stride, 12);
-  }
-
-  #[test]
-  #[cfg(target_os = "windows")]
-  fn tight_windows_pitch_round_trips() {
-    let f = scap::frame::BGRAFrame {
-      display_time: 0,
-      width: 2,
-      height: 4,
-      data: vec![7_u8; 32],
-    };
-    let raw = bgra_to_raw(f).unwrap();
-    assert_eq!(raw.width, 2);
-    assert_eq!(raw.stride, 8);
-    assert_eq!(raw.stride, raw.width * 4);
-  }
-
-  #[test]
-  #[cfg(target_os = "windows")]
-  fn windows_pitch_below_width_is_malformed() {
-    // 4 rows of 8 B cannot hold a 4 px (16 B) logical row.
-    let f = scap::frame::BGRAFrame {
-      display_time: 0,
-      width: 4,
-      height: 4,
-      data: vec![7_u8; 32],
-    };
-    assert!(matches!(
-      bgra_to_raw(f),
-      Err(CaptureError::MalformedFrame(_))
-    ));
   }
 
   /// A Windows user must never be told to open macOS System Settings.

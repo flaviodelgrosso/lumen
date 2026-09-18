@@ -16,7 +16,8 @@ use crate::ServeArgs;
 use crate::pick_interface;
 use crate::stream_config;
 use lumen_capture::{
-  AudioCaptureSource, CaptureError, CaptureSource, ScapAudioCapture, ScapCapture, list_displays,
+  AudioCaptureSource, CaptureError, CaptureSource, PlatformAudioCapture, PlatformCapture,
+  list_displays,
 };
 use lumen_core::StreamConfig;
 use lumen_encoder::{AudioEncoder, OpenH264Encoder, OpusAudioEncoder};
@@ -58,8 +59,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
   // ── capture ──
   let mut capture = match args.window {
-    Some(id) => ScapCapture::for_window(id, cfg.fps)?,
-    None => ScapCapture::for_display(args.display, cfg.fps)?,
+    Some(id) => PlatformCapture::for_window(id, cfg.fps)?,
+    None => PlatformCapture::for_display(args.display, cfg.fps)?,
   };
   let dims = capture.dimensions();
   capture.start()?;
@@ -174,7 +175,7 @@ fn build_audio(cfg: &StreamConfig) -> Option<(Box<dyn AudioCaptureSource>, Box<d
   if !cfg.audio {
     return None;
   }
-  let source = match ScapAudioCapture::new() {
+  let source = match PlatformAudioCapture::new() {
     Ok(source) => source,
     Err(CaptureError::AudioNotSupported) => {
       tracing::warn!("system audio is not available here; streaming video only");
