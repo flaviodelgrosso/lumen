@@ -4,7 +4,7 @@
 //! `ScreenCaptureKit` stream (macOS 13+) through the `screencapturekit`
 //! crate. SCK delivers audio in the output device's format, so buffers are
 //! normalized to 48 kHz stereo interleaved `f32` — Opus' native rate and
-//! format — via the resampler in [`crate::resample`]. Other platforms report
+//! format — via the resampler in [`crate::capture::resample`]. Other platforms report
 //! [`CaptureError::AudioNotSupported`]. Tests use [`FakeAudioCapture`] so
 //! they never need audio hardware.
 
@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use lumen_core::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, OPUS_FRAME_SAMPLES, RawAudioFrame};
 
-use crate::CaptureError;
+use crate::capture::CaptureError;
 
 /// Abstraction over anything that yields raw PCM audio buffers.
 ///
@@ -53,8 +53,8 @@ mod macos {
   use screencapturekit::prelude::*;
 
   use super::{POLL_INTERVAL, QUEUE_BUFFERS};
-  use crate::resample::LaneResampler;
-  use crate::{CaptureError, FrameSender, SendOutcome, require_permission};
+  use crate::capture::resample::LaneResampler;
+  use crate::capture::{CaptureError, FrameSender, SendOutcome, require_permission};
 
   /// `kLinearPCMFormatFlagIsPacked` / `kLinearPCMFormatFlagIsNonInterleaved`
   /// from `CoreAudio/AudioFormat.h`.
@@ -311,7 +311,7 @@ mod macos {
     }
   }
 
-  impl crate::audio::AudioCaptureSource for PlatformAudioCapture {
+  impl crate::capture::audio::AudioCaptureSource for PlatformAudioCapture {
     fn next_audio(&mut self) -> Result<Option<RawAudioFrame>, CaptureError> {
       match self.rx.recv_timeout(POLL_INTERVAL) {
         Ok(frame) => Ok(Some(frame)),

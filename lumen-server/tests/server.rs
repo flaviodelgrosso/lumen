@@ -6,14 +6,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use lumen_session::{ApprovalQueue, AuthDecision, Authorizer, PeerRegistry, SessionToken};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_util::sync::CancellationToken;
 
-use lumen_server::{ServerConfig, ServerHandle, StreamInfo, spawn_server};
+use lumen_server::{
+  ApprovalQueue, AuthDecision, Authorizer, PeerRegistry, ServerConfig, ServerHandle, SessionToken,
+  StreamInfo, spawn_server,
+};
 
 struct TestServer {
   token: SessionToken,

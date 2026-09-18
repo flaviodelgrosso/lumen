@@ -90,7 +90,7 @@ Windows needs **no per-app screen-recording permission** — Windows.Graphics.Ca
 6. A Chromium viewer on another device connects over mDNS (accept the firewall prompt on the **Private** profile first).
 7. Ctrl+C shuts the server down cleanly.
 
-If an item fails, the fix belongs in the platform-gated code in `lumen-capture` or upstream in `windows-capture`; the macOS path is unaffected either way.
+If an item fails, the fix belongs in the platform-gated capture code in `lumen-media` or upstream in `windows-capture`; the macOS path is unaffected either way.
 
 </details>
 
@@ -254,13 +254,10 @@ A capture larger than 3840×2160 that Windows Graphics Capture cannot scale (see
 
 ```
 lumen-core      shared types, config, errors
-lumen-capture   native video (SCK / WGC) + SCK system-audio + fake sources (tests)
-lumen-encoder   openh264 + opus wrappers + fake encoders (tests)
+lumen-media     native video (SCK / WGC) + SCK system-audio + openh264/opus wrappers + fake sources/encoders (tests)
 lumen-webrtc    per-viewer peer connection (video + audio tracks)
-lumen-session   token, approval, user-agent parsing
-lumen-network   LAN interface discovery
-lumen-server    axum HTTP + WebSocket signaling + fan-out
-lumen-cli       `lumen` binary (serve/displays/windows)
+lumen-server    axum HTTP + WebSocket signaling + fan-out + token/approval/user-agent parsing + embedded viewer
+lumen-cli       `lumen` binary (serve/displays/windows), LAN interface discovery
 ```
 
 **Gates**, via the `Makefile`:
@@ -279,11 +276,10 @@ make install     # install the release binary
 
 ```sh
 rustup target add x86_64-pc-windows-msvc
-cargo check -p lumen-core -p lumen-capture -p lumen-session -p lumen-network \
-  --all-targets --locked --target x86_64-pc-windows-msvc
+cargo check -p lumen-core --all-targets --locked --target x86_64-pc-windows-msvc
 ```
 
-The crates behind C toolchains (`lumen-encoder`'s `opus`, `lumen-webrtc`'s `ring`) can't cross-compile from macOS and are validated on the runner only.
+The rest of the workspace sits behind C toolchains (`lumen-media`'s bundled `opus`/`openh264`, `lumen-webrtc`'s `ring`) and can't cross-compile from macOS; it is validated on the `windows-latest` runner only.
 
 > [!NOTE]
 >

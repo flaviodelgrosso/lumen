@@ -13,18 +13,18 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::ServeArgs;
+use crate::network::LanInterface;
 use crate::pick_interface;
 use crate::stream_config;
-use lumen_capture::{
+use lumen_core::StreamConfig;
+use lumen_media::capture::{
   AudioCaptureSource, CaptureError, CaptureSource, PlatformAudioCapture, PlatformCapture,
   list_displays,
 };
-use lumen_core::StreamConfig;
-use lumen_encoder::{AudioEncoder, OpenH264Encoder, OpusAudioEncoder};
-use lumen_network::LanInterface;
-use lumen_server::{ServerConfig, ServerHandle, StreamInfo, spawn_server};
-use lumen_session::{
-  ApprovalQueue, AuthDecision, Authorizer, PeerRegistry, SessionToken, describe_user_agent,
+use lumen_media::encoder::{AudioEncoder, OpenH264Encoder, OpusAudioEncoder};
+use lumen_server::{
+  ApprovalQueue, AuthDecision, Authorizer, PeerRegistry, ServerConfig, ServerHandle, SessionToken,
+  StreamInfo, describe_user_agent, spawn_server,
 };
 
 use lumen_cli::pipeline;
@@ -77,20 +77,20 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
   let encoder = OpenH264Encoder::new(dims, cfg.fps, bitrate, keyframe_frames)?;
 
   // ── network ──
-  let interfaces = lumen_network::discover()?;
+  let interfaces = crate::network::discover()?;
   let iface = match args.bind {
     Some(ip) => LanInterface {
       name: "manual".into(),
       ip,
     },
-    None => pick_interface(&lumen_network::select(&interfaces, None)?)?,
+    None => pick_interface(&crate::network::select(&interfaces, None)?)?,
   };
 
   // Preflight: resolving the `.local` ICE candidates Chromium browsers
   // advertise requires sending IPv4 multicast. A failure here is fatal
   // for those viewers (Safari offers plain IPs and still works), so
   // name the usual cause instead of leaving only webrtc-rs errors.
-  if let Err(source) = lumen_network::probe_multicast() {
+  if let Err(source) = crate::network::probe_multicast() {
     tracing::warn!(
       "IPv4 multicast send failed ({source}); Chromium-based viewers \
              (mDNS-obfuscated ICE candidates) will not connect.\n{}",

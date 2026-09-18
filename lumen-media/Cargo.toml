@@ -1,6 +1,6 @@
 [package]
-name = "lumen-capture"
-description = "Display/window/system-audio capture for Lumen"
+name = "lumen-media"
+description = "Display/window/system-audio capture and H.264/Opus encoding for Lumen"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,8 @@ license.workspace = true
 [dependencies]
 bytes.workspace = true
 lumen-core.workspace = true
+openh264.workspace = true
+opus.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

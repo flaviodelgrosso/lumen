@@ -7,7 +7,7 @@
 
 use lumen_core::Dimensions;
 
-use crate::{CaptureError, CaptureSource, DisplayInfo, WindowInfo};
+use crate::capture::{CaptureError, CaptureSource, DisplayInfo, WindowInfo};
 
 /// Capture source that always reports [`CaptureError::NotSupported`].
 pub struct PlatformCapture;
@@ -19,7 +19,7 @@ impl PlatformCapture {
   ///
   /// See [`CaptureError`].
   pub fn for_display(_display_id: Option<u32>, _fps: u32) -> Result<Self, CaptureError> {
-    crate::require_permission()?;
+    crate::capture::require_permission()?;
     Err(CaptureError::NotSupported)
   }
 
@@ -29,7 +29,7 @@ impl PlatformCapture {
   ///
   /// See [`CaptureError`].
   pub fn for_window(_window_id: u32, _fps: u32) -> Result<Self, CaptureError> {
-    crate::require_permission()?;
+    crate::capture::require_permission()?;
     Err(CaptureError::NotSupported)
   }
 
@@ -58,11 +58,11 @@ pub(crate) fn require_permission() -> Result<(), CaptureError> {
 }
 
 pub(crate) fn list_displays() -> Result<Vec<DisplayInfo>, CaptureError> {
-  crate::require_permission()?;
+  crate::capture::require_permission()?;
   Err(CaptureError::NotSupported)
 }
 
 pub(crate) fn list_windows() -> Result<Vec<WindowInfo>, CaptureError> {
-  crate::require_permission()?;
+  crate::capture::require_permission()?;
   Err(CaptureError::NotSupported)
 }

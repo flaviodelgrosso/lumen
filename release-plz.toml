@@ -11,11 +11,8 @@ git_tag_name = "v{{ version }}"
 git_release_enable = true
 
 changelog_include = [
-  "lumen-capture",
   "lumen-core",
-  "lumen-encoder",
-  "lumen-network",
+  "lumen-media",
   "lumen-server",
-  "lumen-session",
   "lumen-webrtc",
 ]

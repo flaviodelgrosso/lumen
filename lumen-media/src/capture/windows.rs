@@ -31,7 +31,7 @@ use windows_capture::settings::{
 };
 use windows_capture::window::Window;
 
-use crate::{
+use crate::capture::{
   CaptureError, CaptureSource, DisplayInfo, FrameSender, SendOutcome, WindowInfo, bgra_to_raw,
   fits_encodable,
 };
@@ -265,7 +265,7 @@ impl PlatformCapture {
     item: impl TryInto<windows_capture::settings::GraphicsCaptureItemType> + Send + 'static,
     dimensions: Dimensions,
   ) -> Result<Self, CaptureError> {
-    crate::require_permission()?;
+    crate::capture::require_permission()?;
     let (bridge, rx) = FrameSender::bounded(FRAME_QUEUE);
     let settings = Settings::new(
       item,

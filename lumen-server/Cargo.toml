@@ -8,10 +8,11 @@ license.workspace = true
 
 [dependencies]
 axum.workspace = true
+base64.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
+getrandom.workspace = true
 lumen-core.workspace = true
-lumen-session.workspace = true
 lumen-webrtc.workspace = true
 rust-embed.workspace = true
 qrcode.workspace = true

@@ -23,7 +23,7 @@ use screencapturekit::cg::{CGPoint, CGRect};
 use screencapturekit::cm::CMSampleBuffer;
 use screencapturekit::prelude::*;
 
-use crate::{
+use crate::capture::{
   CaptureError, CaptureSource, DisplayInfo, FrameSender, SendOutcome, WindowInfo, bgra_to_raw,
   fit_encodable,
 };

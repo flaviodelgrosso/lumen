@@ -1626,32 +1626,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
-name = "lumen-capture"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "core-graphics",
- "lumen-core",
- "screencapturekit",
- "thiserror 2.0.20",
- "tracing",
- "windows",
- "windows-capture",
-]
-
-[[package]]
 name = "lumen-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "dialoguer",
- "lumen-capture",
+ "local-ip-address",
  "lumen-core",
- "lumen-encoder",
- "lumen-network",
+ "lumen-media",
  "lumen-server",
- "lumen-session",
  "qrcode",
  "thiserror 2.0.20",
  "tokio",
@@ -1671,25 +1655,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "lumen-encoder"
+name = "lumen-media"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "core-graphics",
  "lumen-core",
  "openh264",
  "opus",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "lumen-network"
-version = "0.1.0"
-dependencies = [
- "local-ip-address",
+ "screencapturekit",
  "thiserror 2.0.20",
  "tracing",
+ "windows",
+ "windows-capture",
 ]
 
 [[package]]
@@ -1698,11 +1676,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.23.1",
  "bytes",
  "futures-util",
+ "getrandom 0.4.3",
  "http-body-util",
  "lumen-core",
- "lumen-session",
  "lumen-webrtc",
  "qrcode",
  "rust-embed",
@@ -1714,20 +1693,6 @@ dependencies = [
  "tokio-util",
  "tower",
  "tower-http",
- "tracing",
-]
-
-[[package]]
-name = "lumen-session"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.1",
- "getrandom 0.4.3",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tokio-util",
  "tracing",
 ]
 

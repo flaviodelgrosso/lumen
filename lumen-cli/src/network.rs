@@ -5,7 +5,7 @@
 //! caller decide when several plausible candidates remain.
 
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::IpAddr;
 
 use thiserror::Error;
 
@@ -129,16 +129,6 @@ pub fn select(
     return Err(NetworkError::NoneFound);
   }
   Ok(suitable)
-}
-
-/// The wildcard bind address matching the advertised address family.
-#[must_use]
-pub fn bind_address(ip: IpAddr) -> IpAddr {
-  if ip.is_ipv4() {
-    IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-  } else {
-    IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
-  }
 }
 
 /// Probe whether this host can actually send IPv4 multicast.

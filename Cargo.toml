@@ -1,13 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-  "lumen-capture",
   "lumen-cli",
   "lumen-core",
-  "lumen-encoder",
-  "lumen-network",
+  "lumen-media",
   "lumen-server",
-  "lumen-session",
   "lumen-webrtc",
 ]
 
@@ -19,13 +16,10 @@ license = "MIT"
 
 [workspace.dependencies]
 # workspace members
-lumen-capture = { path = "lumen-capture" }
 lumen-cli = { path = "lumen-cli" }
 lumen-core = { path = "lumen-core" }
-lumen-encoder = { path = "lumen-encoder" }
-lumen-network = { path = "lumen-network" }
+lumen-media = { path = "lumen-media" }
 lumen-server = { path = "lumen-server" }
-lumen-session = { path = "lumen-session" }
 lumen-webrtc = { path = "lumen-webrtc" }
 
 # external

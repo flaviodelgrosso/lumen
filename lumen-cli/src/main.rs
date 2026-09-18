@@ -1,13 +1,14 @@
 //! `lumen` — stream your display to browsers on the LAN.
 
+mod network;
 mod serve;
 
 use std::io::IsTerminal;
 use std::net::IpAddr;
 
 use clap::{Parser, Subcommand};
-use lumen_capture::{list_displays, list_windows};
 use lumen_core::{Quality, StreamConfig};
+use lumen_media::capture::{list_displays, list_windows};
 
 #[derive(Parser)]
 #[command(
@@ -154,8 +155,8 @@ fn stream_config(args: &ServeArgs) -> anyhow::Result<StreamConfig> {
 
 /// Ask the user to pick between several plausible LAN interfaces.
 fn pick_interface(
-  interfaces: &[lumen_network::LanInterface],
-) -> anyhow::Result<lumen_network::LanInterface> {
+  interfaces: &[crate::network::LanInterface],
+) -> anyhow::Result<crate::network::LanInterface> {
   if interfaces.len() == 1 {
     return Ok(interfaces[0].clone());
   }

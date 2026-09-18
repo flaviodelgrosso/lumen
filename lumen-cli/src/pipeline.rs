@@ -16,9 +16,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use lumen_capture::{AudioCaptureSource, CaptureError, CaptureSource};
 use lumen_core::{EncodedAudioFrame, EncodedFrame, PipelineStats, RawFrame};
-use lumen_encoder::{AudioEncoder, EncodeError, VideoEncoder};
+use lumen_media::capture::{AudioCaptureSource, CaptureError, CaptureSource};
+use lumen_media::encoder::{AudioEncoder, EncodeError, VideoEncoder};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -256,8 +256,10 @@ mod tests {
     let stats = Arc::new(PipelineStats::default());
     let (sender, task) = spawn_audio(
       Some((
-        Box::new(lumen_capture::FakeAudioCapture::new()),
-        Box::new(lumen_encoder::OpusAudioEncoder::new(lumen_core::Bitrate(128_000)).unwrap()),
+        Box::new(lumen_media::capture::FakeAudioCapture::new()),
+        Box::new(
+          lumen_media::encoder::OpusAudioEncoder::new(lumen_core::Bitrate(128_000)).unwrap(),
+        ),
       )),
       shutdown.clone(),
       &stats,

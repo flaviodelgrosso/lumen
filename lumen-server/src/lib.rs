@@ -3,6 +3,24 @@
 //!
 //! Media never crosses the WebSocket — video and audio flow through
 //! WebRTC. The socket only carries session state and SDP/ICE exchange.
+//!
+//! The session modules ([`auth`], [`peer`], [`signal`], [`token`], [`ua`])
+//! hold session tokens, authorization, the peer registry and the typed
+//! signaling protocol. The signaling enums are the single source of truth
+//! for the WebSocket JSON format shared by this server and the embedded
+//! browser viewer.
+
+pub mod auth;
+pub mod peer;
+pub mod signal;
+pub mod token;
+pub mod ua;
+
+pub use auth::{ApprovalQueue, AuthDecision, AuthError, Authorizer, PendingView};
+pub use peer::{PeerInfo, PeerRegistry};
+pub use signal::{HostMessage, SignalMessage, ViewerMessage};
+pub use token::{PeerId, SessionToken};
+pub use ua::describe_user_agent;
 
 use std::fmt::Write as _;
 use std::net::{IpAddr, SocketAddr};
@@ -22,10 +40,6 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use lumen_core::{EncodedAudioFrame, EncodedFrame, PipelineStats};
-use lumen_session::{
-  ApprovalQueue, AuthDecision, Authorizer, HostMessage, PeerId, PeerInfo, PeerRegistry,
-  SessionToken, ViewerMessage, describe_user_agent,
-};
 use lumen_webrtc::{Peer, PeerEvent};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
@@ -55,7 +69,7 @@ pub enum ServerError {
 
 /// Embedded viewer assets from `web/`.
 #[derive(RustEmbed)]
-#[folder = "../web"]
+#[folder = "web"]
 struct Assets;
 
 fn mime_for(name: &str) -> &'static str {
