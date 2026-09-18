@@ -141,7 +141,7 @@ pub struct StreamConfig {
 impl Default for StreamConfig {
   fn default() -> Self {
     Self {
-      fps: 30,
+      fps: 60,
       quality: Quality::Auto,
       max_bitrate: None,
       keyframe_interval_secs: 2,

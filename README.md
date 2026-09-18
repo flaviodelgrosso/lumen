@@ -108,7 +108,7 @@ lumen windows          # list capturable windows
 | `--window <id>`        | —       | Capture a single window instead                                      |
 | `--bind <ip>`          | auto    | LAN address to bind (interactive menu when several interfaces exist) |
 | `--port <port>`        | `3131`  | HTTP/signaling port                                                  |
-| `--fps <fps>`          | `30`    | Capture/encode frame rate                                            |
+| `--fps <fps>`          | `60`    | Capture/encode frame rate                                            |
 | `--quality <preset>`   | `auto`  | `low` \| `medium` \| `high` \| `auto`                                |
 | `--max-bitrate <rate>` | preset  | Ceiling, e.g. `8000k` or `2M`                                        |
 | `--auto-accept`        | off     | Admit viewers without prompting                                      |

@@ -55,7 +55,7 @@ struct ServeArgs {
   #[arg(long, value_name = "port")]
   port: Option<u16>,
 
-  /// Target capture/encode frame rate (default: 30)
+  /// Target capture/encode frame rate (default: 60)
   #[arg(long, value_name = "fps")]
   fps: Option<u32>,
 
