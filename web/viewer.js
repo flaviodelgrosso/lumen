@@ -35,96 +35,41 @@
 
   const token = (location.pathname.split("/").filter(Boolean)[1] || "").trim();
 
-  /* ---------------- i18n ---------------- */
+  /* ---------------- strings ---------------- */
 
-  const DICT = {
-    en: {
-      connecting: "Connecting",
-      live: "Live",
-      retrying: "Retrying",
-      waitingHost: "Waiting for host",
-      reconnecting: "Reconnecting",
-      offline: "Offline",
-      blocked: "Blocked",
-      connectingMsg: "Connecting…",
-      waitingTitle: "Almost there",
-      waitingMsg: "Waiting for the host to accept this device…",
-      negotiatingMsg: "Establishing secure stream…",
-      lostMsg: "Lost connection to the host. Retrying…",
-      failedMsg: "Connection failed. Retrying…",
-      negotiationMsg: "Negotiation failed. Retrying…",
-      waitingServerMsg: "Waiting for the host…",
-      endedTitle: "Session ended",
-      endedMsg: "The host disconnected this device.",
-      blockedTitle: "Not allowed",
-      blockedMsg: "The host refused this connection.",
-      badLinkTitle: "Bad link",
-      badLinkMsg: "This URL is missing its session token.",
-      mute: "Mute",
-      unmute: "Unmute",
-      fullscreen: "Toggle fullscreen",
-      exitFullscreen: "Exit fullscreen",
-      reconnect: "Reconnect",
-      retry: "Try again",
-      settings: "Settings",
-      fitLabel: "Picture",
-      fit: "Fit",
-      fill: "Fill",
-      mirrorLabel: "Mirror",
-      statsLabel: "Live stats",
-      language: "Language",
-      off: "Off",
-      on: "On",
-      statsNoData: "No stats yet.",
-    },
-    it: {
-      connecting: "Connessione",
-      live: "In diretta",
-      retrying: "Nuovo tentativo",
-      waitingHost: "In attesa dell'host",
-      reconnecting: "Riconnessione",
-      offline: "Offline",
-      blocked: "Bloccato",
-      connectingMsg: "Connessione in corso…",
-      waitingTitle: "Quasi pronto",
-      waitingMsg: "In attesa che l'host accetti questo dispositivo…",
-      negotiatingMsg: "Apertura del flusso sicuro…",
-      lostMsg: "Connessione all'host persa. Nuovo tentativo…",
-      failedMsg: "Connessione non riuscita. Nuovo tentativo…",
-      negotiationMsg: "Negoziazione non riuscita. Nuovo tentativo…",
-      waitingServerMsg: "In attesa dell'host…",
-      endedTitle: "Sessione terminata",
-      endedMsg: "L'host ha disconnesso questo dispositivo.",
-      blockedTitle: "Non consentito",
-      blockedMsg: "L'host ha rifiutato questa connessione.",
-      badLinkTitle: "Collegamento non valido",
-      badLinkMsg: "Questo URL non contiene il token di sessione.",
-      mute: "Silenzia",
-      unmute: "Riproduci audio",
-      fullscreen: "Schermo intero",
-      exitFullscreen: "Esci dallo schermo intero",
-      reconnect: "Riconnetti",
-      settings: "Impostazioni",
-      retry: "Riprova",
-      fitLabel: "Immagine",
-      fit: "Adatta",
-      fill: "Riempi",
-      mirrorLabel: "Specchio",
-      statsLabel: "Dati in diretta",
-      language: "Lingua",
-      off: "No",
-      on: "Sì",
-      statsNoData: "Nessun dato.",
-    },
+  const STRINGS = {
+    connecting: "Connecting",
+    live: "Live",
+    retrying: "Retrying",
+    waitingHost: "Waiting for host",
+    reconnecting: "Reconnecting",
+    offline: "Offline",
+    blocked: "Blocked",
+    connectingMsg: "Connecting…",
+    waitingTitle: "Almost there",
+    waitingMsg: "Waiting for the host to accept this device…",
+    negotiatingMsg: "Establishing secure stream…",
+    lostMsg: "Lost connection to the host. Retrying…",
+    failedMsg: "Connection failed. Retrying…",
+    negotiationMsg: "Negotiation failed. Retrying…",
+    waitingServerMsg: "Waiting for the host…",
+    endedTitle: "Session ended",
+    endedMsg: "The host disconnected this device.",
+    blockedTitle: "Not allowed",
+    blockedMsg: "The host refused this connection.",
+    badLinkTitle: "Bad link",
+    badLinkMsg: "This URL is missing its session token.",
+    mute: "Mute",
+    unmute: "Unmute",
+    fullscreen: "Toggle fullscreen",
+    exitFullscreen: "Exit fullscreen",
+    reconnect: "Reconnect",
+    retry: "Try again",
+    settings: "Settings",
+    statsNoData: "No stats yet.",
   };
 
-  const LANG_KEY = "lumen.viewer.lang";
-  let lang =
-    localStorage.getItem(LANG_KEY) ||
-    ((navigator.language || "en").toLowerCase().startsWith("it") ? "it" : "en");
-  if (!DICT[lang]) lang = "en";
-
-  const t = (key) => DICT[lang][key] || DICT.en[key] || key;
+  const t = (key) => STRINGS[key] || key;
 
   /* ---------------- settings ---------------- */
 
@@ -141,8 +86,6 @@
     mirrorOn: document.getElementById("btn-mirror-on"),
     statsOff: document.getElementById("btn-stats-off"),
     statsOn: document.getElementById("btn-stats-on"),
-    langEn: document.getElementById("btn-lang-en"),
-    langIt: document.getElementById("btn-lang-it"),
   };
 
   function press(btn, on) {
@@ -158,8 +101,6 @@
     press(seg.mirrorOn, settingsState.mirror);
     press(seg.statsOff, !settingsState.stats);
     press(seg.statsOn, settingsState.stats);
-    press(seg.langEn, lang === "en");
-    press(seg.langIt, lang === "it");
     if (!settingsState.stats) statsLine.hidden = true;
   }
 
@@ -189,24 +130,6 @@
     applySettings();
     pollStats();
   });
-  seg.langEn.addEventListener("click", () => setLang("en"));
-  seg.langIt.addEventListener("click", () => setLang("it"));
-
-  function setLang(next) {
-    lang = next;
-    localStorage.setItem(LANG_KEY, next);
-    document.documentElement.lang = next;
-    document.querySelectorAll("[data-i18n]").forEach((el) => {
-      el.textContent = t(el.dataset.i18n);
-    });
-    applySettings();
-    renderStatus();
-    renderOverlay();
-    syncMuteButton();
-    syncFullscreenButton();
-    btnSettings.setAttribute("aria-label", t("settings"));
-    btnReconnect.setAttribute("aria-label", t("reconnect"));
-  }
 
   /* ---------------- settings panel ---------------- */
 
@@ -712,10 +635,6 @@
 
   /* ---------------- boot ---------------- */
 
-  document.documentElement.lang = lang;
-  document.querySelectorAll("[data-i18n]").forEach((el) => {
-    el.textContent = t(el.dataset.i18n);
-  });
   applySettings();
   btnSettings.setAttribute("aria-label", t("settings"));
   btnReconnect.setAttribute("aria-label", t("reconnect"));

@@ -145,7 +145,7 @@ One `webrtc-rs` peer connection per viewer (negotiated `recvonly` answer from th
 
 ### Serve
 
-`axum` serves the embedded viewer, the host dashboard and a WebSocket signaling channel per viewer: `waiting → approval → offer → answer → ice`. The viewer adds auto-reconnect, double-tap fullscreen, mute, fit/fill, mirror, screen wake lock, optional WebRTC stats (`RTCPeerConnection.getStats()`), and an EN/IT setting — all plain HTML/CSS/JS, no frameworks. The dashboard polls a single admin API (`/api/admin/state`) and drives approval/disconnect through `/api/admin/...`.
+`axum` serves the embedded viewer, the host dashboard and a WebSocket signaling channel per viewer: `waiting → approval → offer → answer → ice`. The viewer adds auto-reconnect, double-tap fullscreen, mute, fit/fill, mirror, screen wake lock, optional WebRTC stats (`RTCPeerConnection.getStats()`) and a retry action on terminal states — all plain HTML/CSS/JS, no frameworks. The dashboard polls a single admin API (`/api/admin/state`) and drives approval/disconnect through `/api/admin/...`.
 
 ## Security
 

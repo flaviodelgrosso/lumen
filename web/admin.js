@@ -8,87 +8,29 @@
 
   const token = (location.pathname.split("/").filter(Boolean)[1] || "").trim();
 
-  /* ---------------- i18n ---------------- */
+  /* ---------------- strings ---------------- */
 
-  const DICT = {
-    en: {
-      role: "Host",
-      streaming: "Streaming",
-      offline: "Offline",
-      streamTitle: "Stream",
-      source: "Source",
-      resolution: "Resolution",
-      fps: "Frame rate",
-      quality: "Quality",
-      bitrate: "Bitrate",
-      audio: "Audio",
-      shareTitle: "Share",
-      viewerLink: "Viewer link",
-      copy: "Copy",
-      copied: "Copied.",
-      copyFailed: "Copy failed — select the text instead.",
-      shareHint: "Scan the QR code or open the link on a device on this network.",
-      pendingTitle: "Pending requests",
-      pendingEmpty: "No devices waiting.",
-      connectedTitle: "Connected devices",
-      connectedEmpty: "No viewers are watching yet.",
-      allow: "Allow",
-      deny: "Deny",
-      disconnect: "Disconnect",
-      qrAlt: "QR code of the viewer link",
-      fpsValue: "{capture} / {target} fps",
-      fpsPending: "measuring…",
-      waited: "waiting {t}",
-      connectedFor: "connected {t}",
-      noAddress: "unknown address",
-      allowFailed: "Could not allow this device.",
-      denyFailed: "Could not deny this device.",
-      kickFailed: "Could not disconnect this device.",
-    },
-    it: {
-      role: "Host",
-      streaming: "In diretta",
-      offline: "Offline",
-      streamTitle: "Flusso",
-      source: "Sorgente",
-      resolution: "Risoluzione",
-      fps: "Frequenza fotogrammi",
-      quality: "Qualità",
-      bitrate: "Bitrate",
-      audio: "Audio",
-      shareTitle: "Condivisione",
-      viewerLink: "Collegamento spettatore",
-      copy: "Copia",
-      copied: "Copiato.",
-      copyFailed: "Copia non riuscita: seleziona il testo.",
-      shareHint: "Inquadra il codice QR oppure apri il collegamento su un dispositivo della rete.",
-      pendingTitle: "Richieste in attesa",
-      pendingEmpty: "Nessun dispositivo in attesa.",
-      connectedTitle: "Dispositivi connessi",
-      connectedEmpty: "Nessuno spettatore collegato.",
-      allow: "Consenti",
-      deny: "Nega",
-      disconnect: "Disconnetti",
-      qrAlt: "Codice QR del collegamento spettatore",
-      fpsValue: "{capture} / {target} fps",
-      fpsPending: "misura in corso…",
-      waited: "in attesa da {t}",
-      connectedFor: "connesso da {t}",
-      noAddress: "indirizzo sconosciuto",
-      allowFailed: "Impossibile consentire il dispositivo.",
-      denyFailed: "Impossibile negare il dispositivo.",
-      kickFailed: "Impossibile disconnettere il dispositivo.",
-    },
+  const STRINGS = {
+    streaming: "Streaming",
+    offline: "Offline",
+    copy: "Copy",
+    copied: "Copied.",
+    copyFailed: "Copy failed — select the text instead.",
+    fpsValue: "{capture} / {target} fps",
+    fpsPending: "measuring…",
+    waited: "waiting {t}",
+    connectedFor: "connected {t}",
+    noAddress: "unknown address",
+    allow: "Allow",
+    deny: "Deny",
+    disconnect: "Disconnect",
+    allowFailed: "Could not allow this device.",
+    denyFailed: "Could not deny this device.",
+    kickFailed: "Could not disconnect this device.",
   };
 
-  const LANG_KEY = "lumen.admin.lang";
-  let lang =
-    localStorage.getItem(LANG_KEY) ||
-    ((navigator.language || "en").toLowerCase().startsWith("it") ? "it" : "en");
-  if (!DICT[lang]) lang = "en";
-
   const t = (key, vars) => {
-    let s = DICT[lang][key] || DICT.en[key] || key;
+    let s = STRINGS[key] || key;
     if (vars) {
       for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, v);
     }
@@ -125,28 +67,6 @@
   const connectedEmpty = $("connected-empty");
 
   qr.src = `/api/admin/qr?token=${encodeURIComponent(token)}`;
-
-  /* ---------------- static labels ---------------- */
-
-  function applyLang() {
-    document.documentElement.lang = lang;
-    document.querySelectorAll("[data-i18n]").forEach((el) => {
-      el.textContent = t(el.dataset.i18n);
-    });
-    qr.alt = t("qrAlt");
-    btnCopy.textContent = t("copy");
-    document.querySelectorAll("#lang button").forEach((b) => {
-      b.setAttribute("aria-pressed", b.dataset.lang === lang ? "true" : "false");
-    });
-  }
-
-  document.querySelectorAll("#lang button").forEach((b) => {
-    b.addEventListener("click", () => {
-      lang = b.dataset.lang;
-      localStorage.setItem(LANG_KEY, lang);
-      applyLang();
-    });
-  });
 
   /* ---------------- api ---------------- */
 
@@ -306,7 +226,6 @@
 
   /* ---------------- loop ---------------- */
 
-  applyLang();
   poll();
   setInterval(() => {
     if (!document.hidden) poll();
