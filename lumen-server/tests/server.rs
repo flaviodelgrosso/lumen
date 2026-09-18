@@ -78,7 +78,7 @@ async fn start(approve: bool) -> TestServer {
 
 /// Minimal HTTP/1.1 GET; returns (status, full response text).
 async fn http_request(addr: SocketAddr, method: &str, path: &str) -> (u16, String) {
-  let mut stream = TcpStream::connect(addr).await.expect("connect");
+  let mut stream = TcpStream::connect(dialable(addr)).await.expect("connect");
   let req = format!("{method} {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
   stream.write_all(req.as_bytes()).await.expect("write");
   let mut buf = Vec::new();
@@ -94,8 +94,19 @@ async fn http_request(addr: SocketAddr, method: &str, path: &str) -> (u16, Strin
 type TestWs =
   tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// A dialable address for the server's bound address: a wildcard bind
+/// reports `0.0.0.0:port`, which Windows refuses to `connect()` (macOS/Linux
+/// alias it to loopback); loopback is what the tests actually mean.
+fn dialable(addr: SocketAddr) -> SocketAddr {
+  if addr.ip().is_unspecified() {
+    (std::net::Ipv4Addr::LOCALHOST, addr.port()).into()
+  } else {
+    addr
+  }
+}
+
 async fn ws_connect(addr: SocketAddr, path: &str) -> anyhow::Result<TestWs> {
-  let url = format!("ws://{addr}{path}");
+  let url = format!("ws://{}{path}", dialable(addr));
   let (stream, _) = tokio_tungstenite::connect_async(&url).await?;
   Ok(stream)
 }
