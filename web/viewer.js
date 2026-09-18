@@ -259,26 +259,51 @@
   /* ---------------- playback recovery ---------------- */
 
   // iOS owns the fullscreen <video>: the native player takes over on
-  // enter, pauses the element on exit (WebKit exits fullscreen first and
-  // pauses second), and its autoplay session refuses `play()` on any
-  // element carrying an audible audio track until a fresh user gesture
-  // arrives. That is why an unmuted stream froze after the maximize/
-  // de-maximize round-trip until the next tap: every programmatic play()
-  // was rejected with NotAllowedError and the tap merely supplied the
-  // missing activation — the WebRTC connection never failed.
+  // enter, and on exit WebKit fires `webkitendfullscreen` BEFORE its
+  // restore animation finishes, then pauses the element once the inline
+  // hand-back completes (WebKit deliberately pauses on exiting native
+  // fullscreen). A play() issued inside the exit handler therefore runs
+  // mid-transition and is swallowed: the element reports playing, the OS
+  // pauses it afterwards, and nothing reacted to that late pause — the
+  // freeze that only ended when the next tap called recoverPlayback.
+  // The connection, tracks and audio never failed.
   //
-  // The viewer is therefore split in two: this video element carries the
-  // video track ONLY and stays permanently muted, so its play() is always
-  // allowed and it auto-resumes after every fullscreen/rotation
-  // transition; audio rides `audioEl`, which never enters fullscreen and
-  // keeps playing across the round-trip. What remains here covers only
-  // the two residual lifecycle gaps:
-  //  1. the OS pause lands AFTER the exit event fires, so a play() issued
-  //     inside the handler can be swallowed — the settled retry chain
-  //     re-plays once the transition has actually completed;
-  //  2. the render layer can still freeze while the element claims
-  //     "playing" — the frame probe detects it and reattachStream()
-  //     rebuilds the pipeline without touching the peer connection.
+  // The viewer stays split in two: this video element carries the video
+  // track ONLY and is permanently muted, so programmatic play() is
+  // always allowed; audio rides `audioEl`, which never enters fullscreen
+  // and keeps playing across the round-trip.
+  //
+  // Recovery is keyed off the real media lifecycle instead of fullscreen
+  // timers:
+  //  - Exiting/entering presentation mode opens a short recovery window
+  //    that is re-armed on every pause. Inside it, the `pause` event
+  //    itself is the trigger: the element is answered with play() the
+  //    moment the OS pauses it. A settle check re-answers a play() that
+  //    the still-settling transition swallowed without pausing the
+  //    element a second time. Repeated pauses escalate once to a
+  //    pipeline rebuild, then stop chasing.
+  //  - The window is scoped to the presentation transition and closes on
+  //    its own, so any later pause remains the app's business.
+  //  - A frozen render layer (element claims playing, no frames) is
+  //    detected by the frame probe and rebuilt with reattachStream().
+
+  // Field diagnostics: `localStorage.setItem("lumen.viewer.debug", "1")`
+  // logs the full media lifecycle — fullscreen/presentation transitions,
+  // play/pause/waiting/stalled/suspend/loadedmetadata, rejected play()
+  // promises and rVFC frame ticks — for on-device tracing.
+  const debugMedia = localStorage.getItem("lumen.viewer.debug") === "1";
+
+  function debugLog(label, el) {
+    if (!debugMedia) return;
+    console.log(
+      `lumen: ${label} paused=${el.paused} ready=${el.readyState} net=${el.networkState} t=${el.currentTime.toFixed(2)}`,
+    );
+  }
+
+  function liveVideoTrack() {
+    const track = videoStream && videoStream.getVideoTracks()[0];
+    return track && track.readyState === "live" ? track : null;
+  }
 
   // Attempt playback and surface the rejection reason instead of
   // swallowing it: a refused play() (autoplay policy) is a different
@@ -300,9 +325,7 @@
   // video track is attached; play() on a running element is itself a
   // no-op. The audio element is nudged along whenever it is attached.
   function recoverPlayback() {
-    if (document.visibilityState !== "visible" || !videoStream) return;
-    const track = videoStream.getVideoTracks()[0];
-    if (!track || track.readyState !== "live") return;
+    if (document.visibilityState !== "visible" || !liveVideoTrack()) return;
     playMedia(video);
     const audioTrack =
       audioEl.srcObject && audioEl.srcObject.getAudioTracks()[0];
@@ -313,9 +336,7 @@
   // manual equivalent of what re-entering fullscreen does. The WebRTC
   // track itself is never touched, so the connection stays intact.
   function reattachStream() {
-    if (document.visibilityState !== "visible" || !videoStream) return;
-    const track = videoStream.getVideoTracks()[0];
-    if (!track || track.readyState !== "live") return;
+    if (document.visibilityState !== "visible" || !liveVideoTrack()) return;
     video.srcObject = null;
     video.srcObject = videoStream;
     playMedia(video);
@@ -328,10 +349,11 @@
   let frameProbeTimer = 0;
   let frameReattachTries = 0;
   function probeFrameProgress() {
-    if (!("requestVideoFrameCallback" in video) || !videoStream) return;
+    if (!("requestVideoFrameCallback" in video) || !liveVideoTrack()) return;
     let advanced = false;
     video.requestVideoFrameCallback(() => {
       advanced = true;
+      if (debugMedia) debugLog("video rVFC frame", video);
     });
     clearTimeout(frameProbeTimer);
     frameProbeTimer = setTimeout(() => {
@@ -339,6 +361,11 @@
         frameReattachTries = 0;
         return;
       }
+      // A paused element is not a frozen render layer: rebuilding it
+      // would auto-resume a legitimate pause. Only the presentation
+      // window resumes pauses; the probe rebuilds a claimed-playing
+      // pipeline that is emitting no frames.
+      if (video.paused) return;
       if (frameReattachTries >= 2) return; // pathological: stop hammering
       frameReattachTries++;
       reattachStream();
@@ -346,37 +373,74 @@
     }, 600);
   }
 
-  // WebKit fires the transition events before its fullscreen/rotation
-  // animation settles and pauses the element only after the event, so an
-  // immediate play() can be swallowed; retry on one shared timer — at
-  // most one retry chain at a time, no listener or timer leaks. Once the
-  // element reports playing, verify frames actually advance.
-  let playbackRecoverTimer = 0;
-  function schedulePlaybackRecovery() {
-    if (document.visibilityState !== "visible") return;
-    clearTimeout(playbackRecoverTimer);
-    clearTimeout(frameProbeTimer);
-    frameReattachTries = 0;
-    recoverPlayback();
-    let retries = 0;
-    const retry = () => {
-      recoverPlayback();
+  // Presentation recovery window: opened by fullscreen/presentation
+  // transitions, closed when playback settles or the bounded escalation
+  // is exhausted. `pause` events outside it are never auto-resumed.
+  let presentationRecovery = null; // { resumes, timer }
+
+  function endPresentationRecovery() {
+    if (!presentationRecovery) return;
+    clearTimeout(presentationRecovery.timer);
+    presentationRecovery = null;
+  }
+
+  function armPresentationWindow(state, delay) {
+    clearTimeout(state.timer);
+    state.timer = setTimeout(() => {
+      if (presentationRecovery !== state) return;
       if (video.paused) {
-        if (++retries < 5) {
-          playbackRecoverTimer = setTimeout(retry, 250);
-        } else {
-          // Still paused after the settle window: rebuild the pipeline
-          // once, then let the frame probe verify frames advance.
-          playbackRecoverTimer = 0;
-          reattachStream();
-          probeFrameProgress();
-        }
+        // A play() swallowed by the still-settling transition never
+        // produces a second pause event; the settle check re-answers it.
+        presentationResume();
       } else {
-        playbackRecoverTimer = 0;
+        endPresentationRecovery();
         probeFrameProgress();
       }
-    };
-    playbackRecoverTimer = setTimeout(retry, 250);
+    }, delay);
+  }
+
+  function presentationResume() {
+    const state = presentationRecovery;
+    if (!state || !liveVideoTrack()) return;
+    if (state.resumes >= 4) {
+      // The OS keeps re-pausing through play() and rebuild alike: stop
+      // chasing; the gesture safety net remains.
+      endPresentationRecovery();
+      return;
+    }
+    state.resumes += 1;
+    if (state.resumes >= 3) {
+      // Plain play() keeps getting re-paused: rebuild the render
+      // pipeline from the still-live stream (never touches the peer).
+      reattachStream();
+    } else {
+      playMedia(video);
+    }
+    armPresentationWindow(state, 1500);
+  }
+
+  function beginPresentationRecovery() {
+    if (document.visibilityState !== "visible" || !liveVideoTrack()) return;
+    endPresentationRecovery();
+    presentationRecovery = { resumes: 0, timer: 0 };
+    frameReattachTries = 0;
+    recoverPlayback();
+    armPresentationWindow(presentationRecovery, 1500);
+  }
+
+  // The OS pause that follows a fullscreen exit lands AFTER the exit
+  // event has fired; inside the scoped window the pause event itself is
+  // the reliable "hand-back complete" signal — answer it immediately.
+  video.addEventListener("pause", () => {
+    if (presentationRecovery) presentationResume();
+  });
+
+  // Non-fullscreen paths (rotation, tab return, layout settle): nudge and
+  // verify frames; the presentation window owns fullscreen round-trips.
+  function schedulePlaybackRecovery() {
+    if (document.visibilityState !== "visible" || !liveVideoTrack()) return;
+    recoverPlayback();
+    probeFrameProgress();
   }
 
   // Safety net, not the mechanism: with the video element permanently
@@ -385,6 +449,18 @@
   document.addEventListener("pointerdown", recoverPlayback, {
     passive: true,
   });
+
+  if (debugMedia) {
+    ["play", "playing", "pause", "waiting", "stalled", "suspend", "loadedmetadata", "webkitbeginfullscreen", "webkitendfullscreen"].forEach(
+      (type) =>
+        video.addEventListener(type, () => debugLog(`video ${type}`, video)),
+    );
+    ["fullscreenchange", "webkitfullscreenchange"].forEach((type) =>
+      document.addEventListener(type, () =>
+        debugLog(`document ${type}`, video),
+      ),
+    );
+  }
 
   /* ---------------- wake lock ---------------- */
 
@@ -551,6 +627,7 @@
 
   function teardownPeer() {
     releaseWakeLock();
+    endPresentationRecovery();
     if (pc) {
       pc.ontrack = null;
       pc.onicecandidate = null;
@@ -750,12 +827,13 @@
   }
 
   // Fullscreen transitions also re-fit the viewport (iOS may not fire
-  // resize when the inline player comes back) and re-arm playback: iOS
-  // pauses the element around its native fullscreen exit.
+  // resize when the inline player comes back) and open the scoped
+  // presentation-recovery window: iOS pauses the element asynchronously
+  // as it hands playback back from the native player.
   function onFullscreenTransition() {
     syncFullscreenButton();
     onViewportChange();
-    schedulePlaybackRecovery();
+    beginPresentationRecovery();
   }
 
   ["fullscreenchange", "webkitfullscreenchange"].forEach((type) =>
@@ -765,6 +843,16 @@
   ["webkitbeginfullscreen", "webkitendfullscreen"].forEach((type) =>
     video.addEventListener(type, onFullscreenTransition),
   );
+  // iOS also reports the native player's mode on the element; `inline`
+  // is the cleanest "hand-back to the page complete" signal. Feature-
+  // detection, not browser sniffing: only engines exposing it subscribe.
+  if ("webkitPresentationMode" in video) {
+    video.addEventListener("webkitpresentationmodechanged", () => {
+      if (debugMedia)
+        debugLog(`video presentationMode=${video.webkitPresentationMode}`, video);
+      if (video.webkitPresentationMode === "inline") beginPresentationRecovery();
+    });
+  }
 
   btnFullscreen.addEventListener("click", toggleFullscreen);
 
