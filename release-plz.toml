@@ -1,9 +1,11 @@
 [workspace]
 git_only = true
+release = false
 release_always = false
 
 [[package]]
 name = "lumen-cli"
+release = true
 changelog_path = "./CHANGELOG.md"
 git_tag_name = "v{{ version }}"
 git_release_enable = true
