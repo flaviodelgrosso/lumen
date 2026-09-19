@@ -22,8 +22,8 @@ use lumen_media::capture::{
 };
 use lumen_media::encoder::{AudioEncoder, OpenH264Encoder, OpusAudioEncoder};
 use lumen_server::{
-  ApprovalQueue, AuthDecision, Authorizer, PeerRegistry, ServerConfig, ServerHandle, SessionToken,
-  StreamInfo, describe_user_agent, spawn_server,
+  ApprovalQueue, AuthDecision, Authorizer, PairingCode, PeerRegistry, ServerConfig, ServerHandle,
+  SessionToken, StreamInfo, describe_user_agent, spawn_server,
 };
 
 use lumen_cli::pipeline;
@@ -99,6 +99,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
   // ── session + services ──
   let admin_token = SessionToken::generate()?;
+  let pairing_code = pairing_code(args.auto_accept)?;
   let (authorizer, approvals) = Authorizer::channel(16);
   let registry = Arc::new(PeerRegistry::new());
   let (kf_tx, kf_rx) = mpsc::channel(64);
@@ -117,26 +118,15 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
   let port = args.port.unwrap_or(3131);
 
-  // Advertise the stable `lumen.local` hostname. Discovery is best
-  // effort: a failure only costs the friendly URL, never the run.
-  let mdns = match crate::mdns::advertise(port, iface.ip) {
-    Ok(guard) => Some(guard),
-    Err(e) => {
-      tracing::warn!(
-        "could not advertise {} via mDNS ({e}); viewers must use the IP URL",
-        crate::mdns::HOSTNAME
-      );
-      None
-    }
-  };
+  let mdns = advertise_mdns(port, iface.ip);
   let viewer_url = crate::mdns::viewer_url(mdns.is_some(), iface.ip, port);
-  let fallback_url = crate::mdns::fallback_url(iface.ip, port);
   let stream = build_stream_info(&args, &cfg, dims, &viewer_url, pipeline.audio.is_some());
 
   let server = spawn_server(ServerConfig {
     port,
     admin_token: admin_token.clone(),
     admin_allow_lan: args.allow_lan_admin,
+    auto_accept_pairing: pairing_code.clone(),
     authorizer,
     approvals: approvals.clone(),
     registry: Arc::clone(&registry),
@@ -155,8 +145,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     &iface,
     server.addr.port(),
     &admin_token,
+    pairing_code.as_ref(),
     &stream,
-    &fallback_url,
     mdns.is_some(),
   );
 
@@ -172,8 +162,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
   // The terminal prompt is one approval surface; the host dashboard is
   // another. Without an interactive stdin the dashboard carries approvals.
-  if args.auto_accept || std::io::stdin().is_terminal() {
-    spawn_approval_loop(approvals, args.auto_accept, shutdown.clone());
+  if !args.auto_accept && std::io::stdin().is_terminal() {
+    spawn_approval_loop(approvals, shutdown.clone());
   }
 
   wait_shutdown(server, pipeline, stats_task, shutdown, mdns).await
@@ -289,6 +279,28 @@ fn audio_label(cfg: &StreamConfig, audio_enabled: bool) -> String {
   }
 }
 
+fn advertise_mdns(port: u16, ip: std::net::IpAddr) -> Option<crate::mdns::MdnsGuard> {
+  crate::mdns::advertise(port, ip).map_or_else(
+    |error| {
+      tracing::warn!(
+        "could not announce {} via mDNS ({error}); viewers must use {}.\n{}",
+        crate::mdns::HOSTNAME,
+        crate::mdns::fallback_url(ip, port),
+        multicast_remediation()
+      );
+      None
+    },
+    Some,
+  )
+}
+
+fn pairing_code(auto_accept: bool) -> anyhow::Result<Option<PairingCode>> {
+  auto_accept
+    .then(PairingCode::generate)
+    .transpose()
+    .map_err(Into::into)
+}
+
 /// Assemble the dashboard/banner stream description from resolved config.
 fn build_stream_info(
   args: &ServeArgs,
@@ -314,8 +326,8 @@ fn print_banner(
   iface: &LanInterface,
   port: u16,
   admin_token: &SessionToken,
+  pairing_code: Option<&PairingCode>,
   stream: &StreamInfo,
-  fallback_url: &str,
   mdns_ok: bool,
 ) {
   println!();
@@ -333,10 +345,17 @@ fn print_banner(
   println!();
   println!("  {}", stream.viewer_url);
   println!();
+  if let Some(pairing_code) = pairing_code {
+    let code = pairing_code.to_string();
+    println!("Pairing code:");
+    println!();
+    println!("  {} {}", &code[..3], &code[3..]);
+    println!();
+  }
   if mdns_ok {
     println!("IP fallback:");
     println!();
-    println!("  {fallback_url}");
+    println!("  {}", crate::mdns::fallback_url(iface.ip, port));
     println!();
   }
   println!("Host dashboard:");
@@ -359,7 +378,7 @@ fn print_banner(
 
 /// Terminal approval surface: prompt for each pending viewer. The admin
 /// dashboard shares the same queue; whichever surface answers first wins.
-fn spawn_approval_loop(queue: ApprovalQueue, auto_accept: bool, shutdown: CancellationToken) {
+fn spawn_approval_loop(queue: ApprovalQueue, shutdown: CancellationToken) {
   let prompt_lock = Arc::new(tokio::sync::Mutex::new(()));
   tokio::spawn(async move {
     loop {
@@ -372,11 +391,6 @@ fn spawn_approval_loop(queue: ApprovalQueue, auto_accept: bool, shutdown: Cancel
           .address
           .map_or_else(|| "unknown".to_owned(), |a| a.to_string());
         let ua = describe_user_agent(req.peer.user_agent.as_deref());
-        if auto_accept {
-          println!("Viewer joined: {ip} ({ua}) [auto-accepted]");
-          let _ = queue.decide(req.id, AuthDecision::Allow);
-          continue;
-        }
         let _guard = prompt_lock.lock().await;
         // The dashboard may have decided while this iteration was queued.
         if queue.poll().iter().all(|pending| pending.id != req.id) {

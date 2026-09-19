@@ -64,7 +64,7 @@ Or build in-tree: `cargo build --release` (→ `target/release/lumen`).
 lumen
 ```
 
-`lumen` prints the viewer entry URL, a QR code and a **host dashboard** URL. Open `http://lumen.local:3131` (or scan the QR) on any device on the same network, then approve the device in the terminal or on the dashboard unless `--auto-accept` is set. `lumen.local` is advertised via mDNS and resolves on any OS with local discovery (macOS, iOS, Android, Windows, most Smart-TV browsers); the banner also prints the **IP fallback** (`http://<lan-ip>:3131`) for networks where `.local` does not resolve — same page, same flow. If mDNS registration fails, `lumen` warns and keeps serving; nothing else changes. The dashboard (`http://127.0.0.1:3131/admin/<admin-token>`) is reachable **from the host machine only** unless you pass `--allow-lan-admin`.
+`lumen` prints the viewer entry URL, a QR code and a **host dashboard** URL. Open `http://lumen.local:3131` (or scan the QR) on any device on the same network, then approve the device in the terminal or on the dashboard. With `--auto-accept`, enter the short pairing code printed by the host instead; the QR contains only the stable viewer entrypoint. `lumen.local` is advertised via mDNS and resolves on any OS with local discovery (macOS, iOS, Android, Windows, most Smart-TV browsers); the banner also prints the **IP fallback** (`http://<lan-ip>:3131`) for networks where `.local` does not resolve — same page, same flow. If mDNS registration fails, `lumen` warns and keeps serving; nothing else changes. The dashboard (`http://127.0.0.1:3131/admin/<admin-token>`) is reachable **from the host machine only** unless you pass `--allow-lan-admin`.
 
 > [!IMPORTANT]
 > **macOS:** the terminal app you run `lumen` from (Terminal, iTerm, Ghostty, …) must be allowed under **System Settings → Privacy & Security → Screen Recording**. The first run registers the request — toggle your terminal on, then **restart it** and run again. Without the permission, `lumen` exits with a clear message instead of crashing.
@@ -112,7 +112,7 @@ lumen windows          # list capturable windows
 | `--fps <fps>`          | `60`    | Capture/encode frame rate                                            |
 | `--quality <preset>`   | `auto`  | `low` \| `medium` \| `high` \| `auto`                                |
 | `--max-bitrate <rate>` | preset  | Ceiling, e.g. `8000k` or `2M`                                        |
-| `--auto-accept`        | off     | Admit viewers without prompting                                      |
+| `--auto-accept`        | off     | Admit viewers that enter the current pairing code                     |
 | `--allow-lan-admin`    | off     | Let non-localhost clients reach the host dashboard                   |
 | `--no-audio`           | off     | Stream video only (no system audio)                                  |
 | `--no-qr`              | off     | Skip the QR code                                                     |
@@ -150,15 +150,29 @@ One `webrtc-rs` peer connection per viewer (negotiated `recvonly` answer from th
 
 ## Security
 
-- The viewer page at `/` is **LAN-discoverable by design** — reaching it grants nothing. Stream access requires the host's **approval** and an **ephemeral session grant**: after approval the server issues a fresh **256-bit** (URL-safe base64, OS CSPRNG) grant with a short TTL, redeemable exactly once by the signaling socket and checked in constant time; expired, reused or forged grants answer `404`. No secret ever lives in the viewer URL. The **admin token** is a separate 256-bit secret carried by the dashboard URL: admin routes answer `404` to missing or wrong admin tokens (fail closed, no enumeration) and `403` when the client is not on localhost. A viewer grant never reaches an admin endpoint, and the admin token never authenticates signaling.
+- `http://lumen.local:3131` is intentionally **LAN-discoverable**, not an authentication secret. Opening `/` grants nothing. Lumen keeps four distinct capability concepts: **PeerId** is a public per-viewer identity shown in logs and host UI; **JoinToken** is a fresh OS-random 256-bit secret that permits polling only the request that created it; **ViewerGrant** is a separate OS-random 256-bit, short-lived, single-use signaling capability, checked in constant time before one WebSocket is opened; and **AdminToken** is an independent 256-bit dashboard/admin capability. A PeerId never reveals a grant; JoinToken, ViewerGrant, and AdminToken are not interchangeable.
+- In normal mode, every viewer needs explicit terminal or dashboard **Allow** approval. With `--auto-accept`, the host prints a six-digit pairing code generated only for that `lumen serve` process; the viewer must enter it before an unattended join is authorized. The pairing code is never persisted, never grants admin access, never enters the viewer URL, and is not embedded in the QR code. Join creation is globally bounded and additionally limited per source IPv4/IPv6 address, with throttled repeated attempts.
 - The admin surface (`/admin/<admin-token>`, `/api/admin/*`) is **localhost-only by default**; `--allow-lan-admin` extends it to the LAN. Admin clients can see the pending queue, **Allow/Deny** viewers (`POST /api/admin/pending/<id>/allow|deny`), and **kick** connected ones (`POST /api/admin/peers/<id>/disconnect`).
-- New viewers are approved on the **terminal prompt or the dashboard** (browser name and device are parsed from the user agent) — first responder wins — unless `--auto-accept` is set. Approval is fail-closed: a saturated pending queue denies immediately, and non-interactive runs without a dashboard decision never leak a peer through.
 - Traffic is **LAN-only**: ICE is restricted to LAN addresses, mDNS `.local` candidates are resolved in query mode, and a loopback socket is bound only for a viewer that is itself on loopback. The HTTP server is plain `http://` (no TLS certificate warnings), but the media itself — video and audio — is SRTP-encrypted end to end. Do not expose the port beyond your LAN.
 
 > [!WARNING]
 > **Audio is everything your computer plays** (macOS) — approved viewers hear notifications, calls and music. Use `--no-audio` for video-only; Windows is video-only already.
 
 ## Troubleshooting
+
+### `lumen.local` is not found, but the IP fallback opens
+
+The HTTP server and LAN route are working; only multicast DNS discovery is
+blocked. On the Mac that runs Lumen, grant the terminal application access at
+**System Settings → Privacy & Security → Local Network**, then quit and reopen
+that terminal before starting Lumen again. The iPhone and Mac must be on the
+same non-guest Wi-Fi network; disable VPNs and any router setting named
+**AP/client isolation**, **wireless isolation**, or **multicast filtering**.
+
+Lumen now waits for its mDNS daemon to announce before printing
+`lumen.local` as the viewer URL. If it cannot announce, it logs the reason
+and prints the working IP fallback instead. Keep using that IP until the
+network permits mDNS.
 
 ### Viewers on other devices never connect
 

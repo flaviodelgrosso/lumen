@@ -24,10 +24,10 @@ pub mod ua;
 
 pub use auth::{ApprovalQueue, AuthDecision, AuthError, Authorizer, PendingView};
 pub use grant::GrantStore;
-pub use join::{JoinError, JoinManager, JoinStatus};
+pub use join::{JoinError, JoinManager, JoinRequest, JoinStatus};
 pub use peer::{PeerInfo, PeerRegistry};
 pub use signal::{HostMessage, SignalMessage, ViewerMessage};
-pub use token::{PeerId, SessionToken};
+pub use token::{PairingCode, PeerId, SessionToken};
 pub use ua::describe_user_agent;
 
 use std::fmt::Write as _;
@@ -42,7 +42,10 @@ use axum::{
     ConnectInfo, Path, Query, State,
     ws::{Message, WebSocket, WebSocketUpgrade},
   },
-  http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
+  http::{
+    HeaderMap, StatusCode,
+    header::{AUTHORIZATION, CONTENT_TYPE},
+  },
   response::{IntoResponse, Response},
   routing::{get, post},
 };
@@ -127,6 +130,8 @@ pub struct ServerConfig {
   pub admin_token: SessionToken,
   /// Allow non-localhost clients on the admin surface (default off).
   pub admin_allow_lan: bool,
+  /// Pairing secret required for unattended joins; absent in normal mode.
+  pub auto_accept_pairing: Option<PairingCode>,
   /// Host approval channel for new viewers.
   pub authorizer: Authorizer,
   /// Shared approval pool polled by the admin dashboard.
@@ -192,6 +197,7 @@ pub async fn spawn_server(cfg: ServerConfig) -> Result<ServerHandle, ServerError
   let state = Arc::new(AppState {
     admin_token: cfg.admin_token,
     admin_allow_lan: cfg.admin_allow_lan,
+    auto_accept_pairing: cfg.auto_accept_pairing,
     approvals: cfg.approvals,
     joins,
     grants,
@@ -222,6 +228,7 @@ pub async fn spawn_server(cfg: ServerConfig) -> Result<ServerHandle, ServerError
 struct AppState {
   admin_token: SessionToken,
   admin_allow_lan: bool,
+  auto_accept_pairing: Option<PairingCode>,
   approvals: ApprovalQueue,
   joins: JoinManager,
   grants: GrantStore,
@@ -271,6 +278,7 @@ fn build_router(state: Arc<AppState>) -> Router {
   Router::new()
     .route("/", get(root))
     .route("/api/join", post(join_create))
+    .route("/api/join/config", get(join_config))
     .route("/api/join/{id}", get(join_poll))
     .route(
       "/viewer.css",
@@ -308,13 +316,49 @@ const INVALID_LINK_HTML: &str = r#"<!doctype html>
  <p style="color:#8a94a3">This Lumen session is no longer active. Start a new
  <code>lumen serve</code> and scan the QR code again.</p></div></div>"#;
 
+/// Pairing is only required in unattended mode. The response exposes no
+/// capability and lets the device-agnostic viewer choose the right UI.
+async fn join_config(State(state): State<Arc<AppState>>) -> Response {
+  axum::Json(serde_json::json!({"pairingRequired": state.auto_accept_pairing.is_some()}))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JoinCreateBody {
+  pairing_code: Option<String>,
+}
+
+/// Extract a join polling capability from a standard bearer header.
+fn join_token(headers: &HeaderMap) -> Option<&str> {
+  headers
+    .get(AUTHORIZATION)
+    .and_then(|value| value.to_str().ok())
+    .and_then(|value| value.strip_prefix("Bearer "))
+    .filter(|token| !token.is_empty())
+}
+
 /// Create a join request: parks the viewer in the host approval queue.
-/// The response carries only the request id — no secret, no capability.
+/// The response carries a public peer id plus a per-request polling secret.
 async fn join_create(
   State(state): State<Arc<AppState>>,
   headers: HeaderMap,
   ConnectInfo(addr): ConnectInfo<SocketAddr>,
+  body: Option<axum::Json<JoinCreateBody>>,
 ) -> Response {
+  let pairing_code = body.and_then(|body| body.0.pairing_code);
+  if let Some(expected) = &state.auto_accept_pairing {
+    let valid = pairing_code
+      .as_deref()
+      .is_some_and(|candidate| expected.matches(candidate));
+    if !valid {
+      return if state.joins.record_failed_attempt(addr.ip()) {
+        StatusCode::FORBIDDEN.into_response()
+      } else {
+        StatusCode::TOO_MANY_REQUESTS.into_response()
+      };
+    }
+  }
   let Ok(id) = PeerId::generate() else {
     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
   };
@@ -328,29 +372,40 @@ async fn join_create(
     joined_at: Instant::now(),
   };
   match state.joins.create(info) {
-    Ok(id) => (
-      StatusCode::CREATED,
-      axum::Json(serde_json::json!({"requestId": id.to_string()})),
-    )
-      .into_response(),
-    // Bounded state: a saturated approval pool or join table answers 429
-    // (fail closed) instead of piling up pending requests.
-    Err(JoinError::Full | JoinError::NoApprover) => StatusCode::TOO_MANY_REQUESTS.into_response(),
+    Ok(join) => {
+      if state.auto_accept_pairing.is_some() {
+        let _ = state.approvals.decide(join.id, AuthDecision::Allow);
+      }
+      (
+        StatusCode::CREATED,
+        axum::Json(serde_json::json!({
+          "requestId": join.id.to_string(),
+          "joinToken": join.token.to_string(),
+        })),
+      )
+        .into_response()
+    }
+    Err(JoinError::Full | JoinError::RateLimited | JoinError::NoApprover) => {
+      StatusCode::TOO_MANY_REQUESTS.into_response()
+    }
     Err(JoinError::Random(_)) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
   }
 }
 
-/// Poll a join request. On approval the first poll issues the ephemeral
-/// single-use grant the viewer redeems on `/ws/<grant>`.
-async fn join_poll(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+/// Poll a join request. On approval the first authorized poll issues the
+/// ephemeral single-use grant the viewer redeems on `/ws/<grant>`.
+async fn join_poll(
+  State(state): State<Arc<AppState>>,
+  Path(id): Path<String>,
+  headers: HeaderMap,
+) -> Response {
   let Ok(parsed) = id.parse::<PeerIdStr>() else {
-    return (
-      StatusCode::NOT_FOUND,
-      axum::Json(serde_json::json!({"status": "gone"})),
-    )
-      .into_response();
+    return StatusCode::NOT_FOUND.into_response();
   };
-  let (status, body) = match state.joins.poll(parsed.0) {
+  let Some(token) = join_token(&headers) else {
+    return StatusCode::NOT_FOUND.into_response();
+  };
+  let (status, body) = match state.joins.poll(parsed.0, token) {
     JoinStatus::Pending => (StatusCode::OK, serde_json::json!({"status": "pending"})),
     JoinStatus::Approved { grant } => (
       StatusCode::OK,

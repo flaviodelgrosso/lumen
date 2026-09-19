@@ -13,8 +13,8 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_util::sync::CancellationToken;
 
 use lumen_server::{
-  ApprovalQueue, AuthDecision, Authorizer, PeerRegistry, ServerConfig, ServerHandle, SessionToken,
-  StreamInfo, spawn_server,
+  ApprovalQueue, AuthDecision, Authorizer, PairingCode, PeerRegistry, ServerConfig, ServerHandle,
+  SessionToken, StreamInfo, spawn_server,
 };
 
 struct TestServer {
@@ -45,6 +45,18 @@ impl TestServer {
   }
 }
 
+#[derive(Clone, Debug)]
+struct ViewerJoin {
+  id: String,
+  token: String,
+}
+
+impl std::fmt::Display for ViewerJoin {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(&self.id)
+  }
+}
+
 /// Answer every pending approval with `decision` as soon as it appears.
 fn spawn_auto_responder(queue: ApprovalQueue, decision: AuthDecision) {
   tokio::spawn(async move {
@@ -65,6 +77,10 @@ fn spawn_auto_responder(queue: ApprovalQueue, decision: AuthDecision) {
 /// `approve` decides immediately in the background; `false` leaves joins
 /// pending so tests can decide through the admin API.
 async fn start(approve: bool) -> TestServer {
+  start_with_pairing(approve, None).await
+}
+
+async fn start_with_pairing(approve: bool, pairing: Option<PairingCode>) -> TestServer {
   let admin_token = SessionToken::generate().expect("admin token");
   let (authorizer, approvals) = Authorizer::channel(16);
   if approve {
@@ -78,6 +94,7 @@ async fn start(approve: bool) -> TestServer {
     port: 0,
     admin_token: admin_token.clone(),
     admin_allow_lan: false,
+    auto_accept_pairing: pairing,
     authorizer,
     approvals: approvals.clone(),
     registry: Arc::clone(&registry),
@@ -119,8 +136,30 @@ async fn start_manual() -> TestServer {
 
 /// Minimal HTTP/1.1 request; returns (status, full response text).
 async fn http_request(addr: SocketAddr, method: &str, path: &str) -> (u16, String) {
+  http_request_with(addr, method, path, None, None).await
+}
+
+async fn http_request_with(
+  addr: SocketAddr,
+  method: &str,
+  path: &str,
+  bearer: Option<&str>,
+  body: Option<&str>,
+) -> (u16, String) {
   let mut stream = TcpStream::connect(dialable(addr)).await.expect("connect");
-  let req = format!("{method} {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n");
+  let authorization = bearer.map_or_else(String::new, |token| {
+    format!("Authorization: Bearer {token}\r\n")
+  });
+  let payload = body.unwrap_or_default();
+  let content = body.map_or_else(String::new, |payload| {
+    format!(
+      "Content-Type: application/json\r\nContent-Length: {}\r\n",
+      payload.len()
+    )
+  });
+  let req = format!(
+    "{method} {path} HTTP/1.1\r\nHost: test\r\n{authorization}{content}Connection: close\r\n\r\n{payload}"
+  );
   stream.write_all(req.as_bytes()).await.expect("write");
   let mut buf = Vec::new();
   stream.read_to_end(&mut buf).await.expect("read");
@@ -178,32 +217,55 @@ async fn next_json_type(stream: &mut TestWs, ty: &str) -> serde_json::Value {
   panic!("no {ty:?} message received");
 }
 
-/// Create a join request; returns its id.
-async fn join(srv: &TestServer) -> String {
-  let (status, body) = http_request(srv.addr, "POST", "/api/join").await;
+/// Create a join request and keep its private polling capability.
+async fn join(srv: &TestServer) -> ViewerJoin {
+  let (status, join) = join_with_pairing(srv, "").await;
   assert_eq!(status, 201, "join must park in the approval queue");
-  body
-    .rsplit("\r\n\r\n")
-    .next()
-    .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
-    .and_then(|j| j["requestId"].as_str().map(str::to_owned))
-    .expect("request id")
+  join.expect("join response")
 }
 
-async fn poll_join(srv: &TestServer, id: &str) -> serde_json::Value {
-  let (status, body) = http_request(srv.addr, "GET", &format!("/api/join/{id}")).await;
+async fn join_with_pairing(srv: &TestServer, code: &str) -> (u16, Option<ViewerJoin>) {
+  let body = if code.is_empty() {
+    None
+  } else {
+    Some(serde_json::json!({"pairingCode": code}).to_string())
+  };
+  let (status, body) =
+    http_request_with(srv.addr, "POST", "/api/join", None, body.as_deref()).await;
+  let join = body
+    .rsplit("\r\n\r\n")
+    .next()
+    .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
+    .and_then(|body| {
+      Some(ViewerJoin {
+        id: body["requestId"].as_str()?.to_owned(),
+        token: body["joinToken"].as_str()?.to_owned(),
+      })
+    });
+  (status, join)
+}
+
+async fn poll_join(srv: &TestServer, join: &ViewerJoin) -> serde_json::Value {
+  let (status, body) = http_request_with(
+    srv.addr,
+    "GET",
+    &format!("/api/join/{}", join.id),
+    Some(&join.token),
+    None,
+  )
+  .await;
   assert!(status == 200 || status == 404, "poll status {status}");
   body
     .rsplit("\r\n\r\n")
     .next()
-    .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+    .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())
     .expect("poll json")
 }
 
 /// Poll until the join is approved; returns the grant.
-async fn wait_approved(srv: &TestServer, id: &str) -> String {
+async fn wait_approved(srv: &TestServer, join: &ViewerJoin) -> String {
   for _ in 0..100 {
-    let json = poll_join(srv, id).await;
+    let json = poll_join(srv, join).await;
     match json["status"].as_str() {
       Some("approved") => {
         return json["grant"]
@@ -221,8 +283,8 @@ async fn wait_approved(srv: &TestServer, id: &str) -> String {
 
 /// Join and wait for the grant (auto-approved servers only).
 async fn join_and_grant(srv: &TestServer) -> String {
-  let id = join(srv).await;
-  wait_approved(srv, &id).await
+  let join = join(srv).await;
+  wait_approved(srv, &join).await
 }
 
 /// Poll the admin state until the pending list is non-empty; returns the
@@ -285,6 +347,88 @@ async fn assets_and_health_served() {
 }
 
 #[tokio::test]
+async fn join_polling_requires_its_own_join_token() {
+  let mut srv = start(true).await;
+  let join = join(&srv).await;
+  let other_token = SessionToken::generate().expect("other token").to_string();
+  let admin_token = srv.admin_token.to_string();
+
+  for token in [
+    None,
+    Some("wrong-token"),
+    Some(other_token.as_str()),
+    Some(admin_token.as_str()),
+  ] {
+    let (status, _) = http_request_with(
+      srv.addr,
+      "GET",
+      &format!("/api/join/{}", join.id),
+      token,
+      None,
+    )
+    .await;
+    assert_eq!(status, 404, "only this join's token can poll it");
+  }
+
+  assert!(matches!(
+    poll_join(&srv, &join).await["status"].as_str(),
+    Some("pending" | "approved")
+  ));
+  assert!(
+    ws_connect(srv.addr, &format!("/ws/{}", join.token))
+      .await
+      .is_err(),
+    "a join token must not authenticate signaling"
+  );
+  for path in [
+    format!("/admin/{}", join.token),
+    format!("/api/admin/state?token={}", join.token),
+  ] {
+    let (status, _) = http_request(srv.addr, "GET", &path).await;
+    assert_eq!(status, 404, "a join token is not an admin capability");
+  }
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn default_mode_does_not_require_a_pairing_code() {
+  let mut srv = start_manual().await;
+  let (status, body) = http_request(srv.addr, "GET", "/api/join/config").await;
+  assert_eq!(status, 200);
+  assert!(body.contains(r#""pairingRequired":false"#));
+  assert_eq!(join(&srv).await.id.len(), 16);
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn auto_accept_requires_and_throttles_pairing_codes() {
+  let code = PairingCode::generate().expect("pairing code");
+  let expected = code.to_string();
+  let wrong = if expected == "000000" {
+    "999999"
+  } else {
+    "000000"
+  };
+  let mut srv = start_with_pairing(false, Some(code)).await;
+  let (status, body) = http_request(srv.addr, "GET", "/api/join/config").await;
+  assert_eq!(status, 200);
+  assert!(body.contains(r#""pairingRequired":true"#));
+
+  assert_eq!(join_with_pairing(&srv, "").await.0, 403);
+  assert_eq!(join_with_pairing(&srv, wrong).await.0, 429);
+  tokio::time::sleep(Duration::from_millis(1_050)).await;
+
+  let (status, join) = join_with_pairing(&srv, &expected).await;
+  assert_eq!(status, 201);
+  let grant = wait_approved(&srv, &join.expect("paired join")).await;
+  assert!(
+    ws_connect(srv.addr, &format!("/ws/{grant}")).await.is_ok(),
+    "the correct pairing code admits an unattended viewer"
+  );
+  srv.stop().await;
+}
+
+#[tokio::test]
 async fn unapproved_client_cannot_reach_signaling() {
   let mut srv = start_manual().await;
   let id = join(&srv).await;
@@ -292,7 +436,7 @@ async fn unapproved_client_cannot_reach_signaling() {
 
   // The join is visible to the host but grants nothing on its own.
   let pending = wait_pending_json(&srv).await;
-  assert_eq!(pending["id"], id);
+  assert_eq!(pending["id"], id.id);
   assert_eq!(pending["address"], "127.0.0.1");
 
   // No signaling without a redeemed grant.
@@ -392,19 +536,21 @@ async fn garbage_grant_fails_handshake() {
 #[tokio::test]
 async fn join_requests_are_bounded() {
   let mut srv = start_manual().await;
-  // The approval pool (16) saturates before the join table: further
-  // cheap POSTs are rejected instead of piling up pending state.
-  for _ in 0..16 {
-    let (status, _) = http_request(srv.addr, "POST", "/api/join").await;
-    assert_eq!(status, 201);
-  }
+  // Per-IP bounds reject the third pending viewer before one source can
+  // occupy the global approval queue.
   let (status, _) = http_request(srv.addr, "POST", "/api/join").await;
-  assert_eq!(status, 429, "saturated pool answers fail-closed");
+  assert_eq!(status, 201);
+  tokio::time::sleep(Duration::from_millis(1_050)).await;
+  let (status, _) = http_request(srv.addr, "POST", "/api/join").await;
+  assert_eq!(status, 201);
+  tokio::time::sleep(Duration::from_millis(1_050)).await;
+  let (status, _) = http_request(srv.addr, "POST", "/api/join").await;
+  assert_eq!(status, 429, "one address cannot fill the global queue");
   srv.stop().await;
 }
 
 #[tokio::test]
-async fn auto_accept_admits_without_a_host_prompt() {
+async fn host_approval_admits_without_a_pairing_code() {
   let mut srv = start(true).await;
   let id = join(&srv).await;
   let grant = wait_approved(&srv, &id).await;
@@ -422,6 +568,7 @@ async fn multiple_viewers_connect_independently() {
   let mut srv = start(true).await;
   let id_a = join(&srv).await;
   let grant_a = wait_approved(&srv, &id_a).await;
+  tokio::time::sleep(Duration::from_millis(1_050)).await;
   let id_b = join(&srv).await;
   let grant_b = wait_approved(&srv, &id_b).await;
   assert_ne!(grant_a, grant_b, "grants are per-peer");
@@ -446,7 +593,7 @@ async fn multiple_viewers_connect_independently() {
     .collect();
   assert_eq!(ids.len(), 2);
   assert!(
-    ids.contains(&id_a) && ids.contains(&id_b),
+    ids.contains(&id_a.id) && ids.contains(&id_b.id),
     "the admin state exposes the join ids as peer ids"
   );
   let (status, _) = http_request(
@@ -554,7 +701,7 @@ async fn admin_can_approve_pending_viewer() {
 
   let pending = wait_pending_json(&srv).await;
   let pending_id = pending["id"].as_str().expect("pending id").to_owned();
-  assert_eq!(pending_id, id);
+  assert_eq!(pending_id, id.id);
 
   let (status, _) = http_request(
     srv.addr,

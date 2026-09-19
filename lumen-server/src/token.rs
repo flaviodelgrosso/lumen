@@ -71,6 +71,60 @@ impl fmt::Debug for SessionToken {
   }
 }
 
+/// A short, per-process pairing secret for unattended sharing.
+///
+/// It is deliberately distinct from every URL-capable token: it only proves
+/// physical proximity to the host's displayed terminal during join creation.
+#[derive(Clone)]
+pub struct PairingCode(String);
+
+impl PairingCode {
+  /// Generate a uniformly distributed six-digit code from the OS CSPRNG.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`TokenError::Random`] when the OS CSPRNG fails.
+  pub fn generate() -> Result<Self, TokenError> {
+    const SPACE: u32 = 1_000_000;
+    const CEILING: u32 = u32::MAX - u32::MAX % SPACE;
+    loop {
+      let mut buf = [0_u8; 4];
+      getrandom::fill(&mut buf).map_err(|e| TokenError::Random(e.to_string()))?;
+      let value = u32::from_be_bytes(buf);
+      if value < CEILING {
+        return Ok(Self(format!("{:06}", value % SPACE)));
+      }
+    }
+  }
+
+  /// Constant-time comparison against a viewer-supplied candidate.
+  #[must_use]
+  pub fn matches(&self, candidate: &str) -> bool {
+    let ours = self.0.as_bytes();
+    let theirs = candidate.as_bytes();
+    if ours.len() != theirs.len() {
+      return false;
+    }
+    let mut diff = 0_u8;
+    for (a, b) in ours.iter().zip(theirs) {
+      diff |= a ^ b;
+    }
+    diff == 0
+  }
+}
+
+impl fmt::Display for PairingCode {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str(&self.0)
+  }
+}
+
+impl fmt::Debug for PairingCode {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str("PairingCode(<redacted>)")
+  }
+}
+
 /// Stable identity for one connected viewer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PeerId(u64);

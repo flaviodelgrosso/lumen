@@ -8,9 +8,9 @@
 //! the caller degrades to the IP URL.
 
 use std::net::IpAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use mdns_sd::{ServiceDaemon, ServiceInfo};
+use mdns_sd::{DaemonEvent, ServiceDaemon, ServiceInfo};
 use thiserror::Error;
 
 /// The stable hostname viewers type: `http://lumen.local:<port>`.
@@ -24,6 +24,9 @@ const SERVICE_DOMAIN: &str = "_http._tcp.local.";
 const SERVICE_INSTANCE: &str = "Lumen";
 /// Bound wait for the daemon to acknowledge shutdown.
 const SHUTDOWN_WAIT: Duration = Duration::from_millis(500);
+/// Registration must actually send an announcement before the stable name is
+/// presented as usable. `register` only queues work on the daemon thread.
+const ANNOUNCE_WAIT: Duration = Duration::from_secs(1);
 
 /// Errors advertising the service.
 #[derive(Debug, Error)]
@@ -31,6 +34,9 @@ pub enum MdnsError {
   /// The mDNS daemon rejected the daemon start or the registration.
   #[error("mDNS advertisement failed: {0}")]
   Daemon(#[from] mdns_sd::Error),
+  /// The daemon accepted registration but could not announce it on the LAN.
+  #[error("mDNS advertisement was not announced on any network interface")]
+  NotAnnounced,
 }
 
 /// Live advertisement. [`MdnsGuard::stop`] (or dropping it) deregisters
@@ -71,6 +77,7 @@ impl Drop for MdnsGuard {
 /// abort the run over a discovery failure.
 pub fn advertise(port: u16, ip: IpAddr) -> Result<MdnsGuard, MdnsError> {
   let daemon = ServiceDaemon::new()?;
+  let events = daemon.monitor()?;
   let info = ServiceInfo::new(
     SERVICE_DOMAIN,
     SERVICE_INSTANCE,
@@ -81,7 +88,23 @@ pub fn advertise(port: u16, ip: IpAddr) -> Result<MdnsGuard, MdnsError> {
   )?;
   let fullname = info.get_fullname().to_owned();
   daemon.register(info)?;
-  Ok(MdnsGuard { daemon, fullname })
+
+  let deadline = Instant::now() + ANNOUNCE_WAIT;
+  while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+    match events.recv_timeout(remaining) {
+      Ok(DaemonEvent::Announce(name, _)) if name == fullname => {
+        return Ok(MdnsGuard { daemon, fullname });
+      }
+      Ok(DaemonEvent::Error(error)) => {
+        let _ = daemon.shutdown();
+        return Err(MdnsError::Daemon(error));
+      }
+      Ok(_) => {}
+      Err(_) => break,
+    }
+  }
+  let _ = daemon.shutdown();
+  Err(MdnsError::NotAnnounced)
 }
 
 /// Canonical viewer entrypoint: the stable hostname when mDNS
@@ -136,12 +159,11 @@ mod tests {
   }
 
   #[test]
-  fn advertise_and_stop_never_panic() {
+  fn advertise_only_returns_after_announcement_or_error() {
     // Real multicast depends on the environment (CI runners, sandboxed
-    // macOS, VPNs): the guarantee is that registration either works or
-    // errors cleanly, and that stopping a live guard completes.
-    let result = advertise(3131, "127.0.0.1".parse().unwrap());
-    if let Ok(guard) = result {
+    // macOS, VPNs): an accepted registration reaches Announce; otherwise
+    // `advertise` fails closed before callers publish `lumen.local`.
+    if let Ok(guard) = advertise(3131, "127.0.0.1".parse().unwrap()) {
       guard.stop();
     }
   }

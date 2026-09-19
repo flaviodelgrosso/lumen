@@ -32,6 +32,8 @@
   const btnSettings = document.getElementById("btn-settings");
   const settings = document.getElementById("settings");
   const statsLine = document.getElementById("stats-line");
+  const pairingForm = document.getElementById("pairing-form");
+  const pairingInput = document.getElementById("pairing-code");
 
   // `hidden` is an IDL property only on HTMLElement — SVG icons must toggle
   // the attribute itself, or the markup state never clears.
@@ -72,6 +74,9 @@
     retry: "Try again",
     settings: "Settings",
     statsNoData: "No stats yet.",
+    pairingTitle: "Pair this device",
+    pairingMsg: "Enter the code shown on the host.",
+    pairingInvalid: "The pairing code was not accepted. Check the code and try again.",
   };
 
   const t = (key) => STRINGS[key] || key;
@@ -544,6 +549,9 @@
   let reconnectDelay = 1000;
   let joinTimer = null;
   let joinId = null;
+  let joinToken = null;
+  let pairingRequired = false;
+  let pairingCode = null;
   let terminal = false; // gone: denied, host ended, unsupported browser
 
   // Join flow: POST /api/join (no secret, no URL token) → poll status →
@@ -551,33 +559,69 @@
   // grant → the signaling socket opens with it. A dropped socket means a
   // fresh join (the host is asked again), matching the per-connection
   // approval semantics of the tokenized flow this replaces.
+  function showPairing(messageKey = "pairingMsg") {
+    clearTimeout(reconnectTimer);
+    clearTimeout(joinTimer);
+    closeSignaling();
+    pairingForm.hidden = false;
+    overlay.hidden = false;
+    hud.hidden = true;
+    setHidden(overlayIcon, true);
+    currentOverlay = {
+      titleKey: "pairingTitle",
+      msgKey: messageKey,
+      mode: "spinner",
+    };
+    renderOverlay();
+    pairingInput.focus();
+  }
+
+  // Join flow: POST /api/join → poll with its per-request JoinToken → host
+  // approval → ephemeral ViewerGrant → signaling socket. The pairing code is
+  // sent only in the POST body for unattended runs and never enters a URL.
   async function connect() {
     if (terminal) return;
+    if (pairingRequired && !pairingCode) {
+      showPairing();
+      return;
+    }
     clearTimeout(reconnectTimer);
     clearTimeout(joinTimer);
     joinId = null;
+    joinToken = null;
+    pairingForm.hidden = true;
+    setHidden(overlayIcon, false);
     setStatus("connecting", "");
     showOverlay("Lumen", "connectingMsg", "spinner");
     try {
-      const res = await fetch("/api/join", { method: "POST", cache: "no-store" });
+      const init = { method: "POST", cache: "no-store" };
+      if (pairingRequired) {
+        init.headers = { "Content-Type": "application/json" };
+        init.body = JSON.stringify({ pairingCode });
+      }
+      const res = await fetch("/api/join", init);
       if (terminal) return;
+      if (res.status === 403 || (res.status === 429 && pairingRequired)) {
+        pairingCode = null;
+        showPairing("pairingInvalid");
+        return;
+      }
       if (res.status === 429) {
-        // The host's pending queue is bounded and full: back off.
         scheduleReconnect("busyMsg");
         return;
       }
       if (!res.ok) {
-        // Could be a server restart; keep retrying unless it is gone.
         scheduleReconnect("waitingServerMsg");
         return;
       }
       const data = await res.json();
       if (terminal) return;
-      if (!data || !data.requestId) {
+      if (!data || !data.requestId || !data.joinToken) {
         scheduleReconnect("failedMsg");
         return;
       }
       joinId = data.requestId;
+      joinToken = data.joinToken;
       pollJoin();
     } catch {
       if (!terminal) scheduleReconnect("failedMsg");
@@ -588,13 +632,14 @@
     setStatus("waitingHost", "");
     showOverlay("waitingTitle", "waitingMsg", "spinner");
     const step = async () => {
-      if (terminal || !joinId) return;
+      if (terminal || !joinId || !joinToken) return;
       let data = null;
       let gone = false;
       let lost = false;
       try {
         const res = await fetch(`/api/join/${encodeURIComponent(joinId)}`, {
           cache: "no-store",
+          headers: { Authorization: `Bearer ${joinToken}` },
         });
         if (res.status === 404) gone = true;
         else if (!res.ok) lost = true;
@@ -898,6 +943,20 @@
     document.addEventListener(type, onFullscreenTransition),
   );
   // iOS fires the legacy pair on the video element instead.
+
+  pairingInput.addEventListener("input", () => {
+    pairingInput.value = pairingInput.value.replace(/\D/g, "").slice(0, 6);
+  });
+  pairingForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const code = pairingInput.value.replace(/\D/g, "");
+    if (code.length !== 6) {
+      pairingInput.focus();
+      return;
+    }
+    pairingCode = code;
+    connect();
+  });
   ["webkitbeginfullscreen", "webkitendfullscreen"].forEach((type) =>
     video.addEventListener(type, onFullscreenTransition),
   );
@@ -960,16 +1019,28 @@
 
   /* ---------------- boot ---------------- */
 
-  applySettings();
-  btnSettings.setAttribute("aria-label", t("settings"));
-  btnReconnect.setAttribute("aria-label", t("reconnect"));
+  async function boot() {
+    applySettings();
+    btnSettings.setAttribute("aria-label", t("settings"));
+    btnReconnect.setAttribute("aria-label", t("reconnect"));
 
-  // Capability detection, not vendor detection: any browser with
-  // RTCPeerConnection streams; everything else gets a clear message.
-  if (!("RTCPeerConnection" in window)) {
-    terminal = true;
-    showOverlay("unsupportedTitle", "unsupportedMsg", "error");
-  } else {
-    connect();
+    // Capability detection, not vendor detection: any browser with
+    // RTCPeerConnection streams; everything else gets a clear message.
+    if (!("RTCPeerConnection" in window)) {
+      terminal = true;
+      showOverlay("unsupportedTitle", "unsupportedMsg", "error");
+      return;
+    }
+    try {
+      const response = await fetch("/api/join/config", { cache: "no-store" });
+      const config = response.ok ? await response.json() : null;
+      pairingRequired = Boolean(config && config.pairingRequired);
+    } catch {
+      // The normal join path reports a server outage and retries.
+    }
+    if (pairingRequired) showPairing();
+    else connect();
   }
+
+  boot();
 })();

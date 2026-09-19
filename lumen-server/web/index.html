@@ -46,6 +46,23 @@
           </button>
           <h1 id="overlay-title">Lumen</h1>
           <p id="overlay-message">Connecting…</p>
+          <form id="pairing-form" hidden>
+            <label for="pairing-code">Pairing code</label>
+            <input
+              id="pairing-code"
+              name="pairing-code"
+              type="text"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              pattern="[0-9]{6}"
+              maxlength="6"
+              enterkeyhint="done"
+              aria-describedby="pairing-help"
+              required
+            />
+            <p id="pairing-help">Enter the six-digit code shown by the host.</p>
+            <button id="pairing-submit" type="submit">Connect</button>
+          </form>
         </div>
       </div>
 

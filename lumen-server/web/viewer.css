@@ -151,6 +151,54 @@ body {
   color: var(--muted);
 }
 
+#pairing-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 22px;
+  text-align: left;
+}
+
+#pairing-form label {
+  font-size: 17px;
+  font-weight: 650;
+}
+
+#pairing-code {
+  width: 100%;
+  min-height: 62px;
+  border: 2px solid rgba(125, 211, 252, 0.5);
+  border-radius: 12px;
+  background: #111827;
+  color: var(--text);
+  font: 700 30px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.2em;
+  text-align: center;
+}
+
+#pairing-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+#pairing-submit {
+  min-height: 58px;
+  border: 1px solid rgba(125, 211, 252, 0.65);
+  border-radius: 12px;
+  background: var(--accent);
+  color: #082032;
+  font: inherit;
+  font-size: 19px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#pairing-code:focus-visible,
+#pairing-submit:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 3px;
+}
+
 #btn-retry {
   margin: 18px auto 0;
   display: flex;
