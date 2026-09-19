@@ -191,6 +191,21 @@ impl Authorizer {
     verdict.await.map_err(|_| AuthError::NoApprover)
   }
 
+  /// Park `peer` in the approval queue without awaiting the verdict.
+  ///
+  /// The returned receiver resolves with the host's decision; dropping
+  /// it (abandoned viewer) removes the request from the queue on the
+  /// next prune. Used by the join flow, where the verdict is observed
+  /// by repeated polls instead of one long-lived socket.
+  ///
+  /// # Errors
+  ///
+  /// Returns [`AuthError::NoApprover`] when the queue is saturated;
+  /// callers must treat that as a denial.
+  pub fn park(&self, peer: PeerInfo) -> Result<oneshot::Receiver<AuthDecision>, AuthError> {
+    self.queue.submit(peer)
+  }
+
   /// Approval helper: `Allow` only when the host explicitly allows.
   pub async fn is_allowed(&self, peer: PeerInfo) -> bool {
     matches!(self.request(peer).await, Ok(AuthDecision::Allow))

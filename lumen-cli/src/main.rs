@@ -1,5 +1,6 @@
 //! `lumen` — stream your display to browsers on the LAN.
 
+mod mdns;
 mod network;
 mod serve;
 

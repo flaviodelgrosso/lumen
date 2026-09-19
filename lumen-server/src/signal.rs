@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum HostMessage {
-  /// The viewer must approve; no media until then.
-  Waiting,
   /// WebRTC connectivity established; media is flowing.
   Connected,
   /// WebRTC SDP offer from the host.
@@ -121,11 +119,7 @@ mod tests {
   }
 
   #[test]
-  fn waiting_and_error_tags() {
-    assert_eq!(
-      serde_json::to_string(&HostMessage::Waiting).unwrap(),
-      "{\"type\":\"waiting\"}"
-    );
+  fn error_tag_roundtrips() {
     let err = HostMessage::Error {
       message: "declined".to_owned(),
     };
@@ -139,7 +133,7 @@ mod tests {
   fn host_cannot_forgive_viewer_answer_and_vice_versa() {
     // Directional enums: a host message JSON must not parse as a viewer
     // message and vice versa, so the server can reject misrouted frames.
-    let host = serde_json::to_string(&HostMessage::Waiting).unwrap();
+    let host = serde_json::to_string(&HostMessage::Connected).unwrap();
     assert!(serde_json::from_str::<ViewerMessage>(&host).is_err());
     let viewer = serde_json::to_string(&ViewerMessage::Answer {
       sdp: "x".to_owned(),

@@ -1,5 +1,5 @@
-//! Tests: routes, viewer/admin token split, approval workflow, signaling,
-//! kicking.
+//! Tests: tokenless entry, join/approval/grant flow, admin isolation,
+//! signaling, kicking.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -18,7 +18,6 @@ use lumen_server::{
 };
 
 struct TestServer {
-  token: SessionToken,
   admin_token: SessionToken,
   addr: SocketAddr,
   registry: Arc<PeerRegistry>,
@@ -63,10 +62,9 @@ fn spawn_auto_responder(queue: ApprovalQueue, decision: AuthDecision) {
   });
 }
 
-/// `approve` decides immediately in the background; `false` leaves viewers
+/// `approve` decides immediately in the background; `false` leaves joins
 /// pending so tests can decide through the admin API.
 async fn start(approve: bool) -> TestServer {
-  let token = SessionToken::generate().expect("token");
   let admin_token = SessionToken::generate().expect("admin token");
   let (authorizer, approvals) = Authorizer::channel(16);
   if approve {
@@ -78,7 +76,6 @@ async fn start(approve: bool) -> TestServer {
   let shutdown = CancellationToken::new();
   let server = spawn_server(ServerConfig {
     port: 0,
-    token: token.clone(),
     admin_token: admin_token.clone(),
     admin_allow_lan: false,
     authorizer,
@@ -97,14 +94,13 @@ async fn start(approve: bool) -> TestServer {
       quality: "auto".to_owned(),
       bitrate_label: "8M".to_owned(),
       audio_label: "off".to_owned(),
-      viewer_url: format!("http://127.0.0.1:0/s/{token}"),
+      viewer_url: "http://lumen.local:0".to_owned(),
     },
     stats: Arc::new(lumen_core::PipelineStats::default()),
   })
   .await
   .expect("server starts");
   TestServer {
-    token,
     admin_token,
     addr: server.addr,
     registry,
@@ -182,22 +178,58 @@ async fn next_json_type(stream: &mut TestWs, ty: &str) -> serde_json::Value {
   panic!("no {ty:?} message received");
 }
 
+/// Create a join request; returns its id.
+async fn join(srv: &TestServer) -> String {
+  let (status, body) = http_request(srv.addr, "POST", "/api/join").await;
+  assert_eq!(status, 201, "join must park in the approval queue");
+  body
+    .rsplit("\r\n\r\n")
+    .next()
+    .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+    .and_then(|j| j["requestId"].as_str().map(str::to_owned))
+    .expect("request id")
+}
+
+async fn poll_join(srv: &TestServer, id: &str) -> serde_json::Value {
+  let (status, body) = http_request(srv.addr, "GET", &format!("/api/join/{id}")).await;
+  assert!(status == 200 || status == 404, "poll status {status}");
+  body
+    .rsplit("\r\n\r\n")
+    .next()
+    .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+    .expect("poll json")
+}
+
+/// Poll until the join is approved; returns the grant.
+async fn wait_approved(srv: &TestServer, id: &str) -> String {
+  for _ in 0..100 {
+    let json = poll_join(srv, id).await;
+    match json["status"].as_str() {
+      Some("approved") => {
+        return json["grant"]
+          .as_str()
+          .expect("approved carries a grant")
+          .to_owned();
+      }
+      Some("pending") => {}
+      other => panic!("unexpected join status: {other:?}"),
+    }
+    tokio::time::sleep(Duration::from_millis(25)).await;
+  }
+  panic!("join never approved");
+}
+
+/// Join and wait for the grant (auto-approved servers only).
+async fn join_and_grant(srv: &TestServer) -> String {
+  let id = join(srv).await;
+  wait_approved(srv, &id).await
+}
+
 /// Poll the admin state until the pending list is non-empty; returns the
 /// first pending entry.
 async fn wait_pending_json(srv: &TestServer) -> serde_json::Value {
   for _ in 0..100 {
-    let (status, body) = http_request(
-      srv.addr,
-      "GET",
-      &format!("/api/admin/state?{}", srv.admin_query()),
-    )
-    .await;
-    assert_eq!(status, 200);
-    let json: serde_json::Value = body
-      .rsplit("\r\n\r\n")
-      .next()
-      .and_then(|b| serde_json::from_str(b).ok())
-      .expect("state json");
+    let json = admin_state(srv).await;
     if let Some(first) = json["pending"].get(0) {
       return first.clone();
     }
@@ -222,22 +254,26 @@ async fn admin_state(srv: &TestServer) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn invalid_tokens_are_rejected() {
+async fn root_serves_the_viewer_with_no_redirect_and_no_secret() {
   let mut srv = start(true).await;
-  let (status, _) = http_request(srv.addr, "GET", "/s/wrong-token").await;
+  let (status, body) = http_request(srv.addr, "GET", "/").await;
+  assert_eq!(status, 200, "GET / serves the viewer directly");
+  assert!(body.contains("<video"));
+  assert!(
+    !body.to_lowercase().contains("location:"),
+    "GET / must not redirect to a tokenized URL"
+  );
+  // The old tokenized entrypoints are gone.
+  let (status, _) = http_request(srv.addr, "GET", "/s/any-token").await;
   assert_eq!(status, 404);
-  let (status, body) = http_request(srv.addr, "GET", "/api/session/wrong-token").await;
+  let (status, _) = http_request(srv.addr, "GET", "/api/session/any-token").await;
   assert_eq!(status, 404);
-  assert!(body.contains("false"));
   srv.stop().await;
 }
 
 #[tokio::test]
-async fn valid_token_serves_viewer_and_session() {
+async fn assets_and_health_served() {
   let mut srv = start(true).await;
-  let (status, body) = http_request(srv.addr, "GET", &format!("/s/{}", srv.token)).await;
-  assert_eq!(status, 200);
-  assert!(body.contains("<video"));
   let (status, body) = http_request(srv.addr, "GET", "/viewer.js").await;
   assert_eq!(status, 200);
   assert!(body.contains("text/javascript"));
@@ -245,31 +281,65 @@ async fn valid_token_serves_viewer_and_session() {
   assert_eq!(status, 200);
   let (status, _) = http_request(srv.addr, "GET", "/health").await;
   assert_eq!(status, 200);
-  let (status, _body) = http_request(srv.addr, "GET", "/api/session/wrong-token").await;
-  assert_eq!(status, 404);
-  let (status, body) = http_request(srv.addr, "GET", &format!("/api/session/{}", srv.token)).await;
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn unapproved_client_cannot_reach_signaling() {
+  let mut srv = start_manual().await;
+  let id = join(&srv).await;
+  assert_eq!(poll_join(&srv, &id).await["status"], "pending");
+
+  // The join is visible to the host but grants nothing on its own.
+  let pending = wait_pending_json(&srv).await;
+  assert_eq!(pending["id"], id);
+  assert_eq!(pending["address"], "127.0.0.1");
+
+  // No signaling without a redeemed grant.
+  let err = ws_connect(srv.addr, "/ws/not-a-grant").await;
+  assert!(err.is_err(), "handshake must fail without a grant");
+  assert_eq!(srv.registry.count(), 0);
+  assert_eq!(
+    poll_join(&srv, &id).await["status"],
+    "pending",
+    "still no capability while pending"
+  );
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn denied_viewer_cannot_obtain_or_use_a_grant() {
+  let mut srv = start_manual().await;
+  let id = join(&srv).await;
+  let pending = wait_pending_json(&srv).await;
+  let pending_id = pending["id"].as_str().expect("pending id").to_owned();
+
+  let (status, _) = http_request(
+    srv.addr,
+    "POST",
+    &format!("/api/admin/pending/{pending_id}/deny?{}", srv.admin_query()),
+  )
+  .await;
   assert_eq!(status, 200);
-  assert!(body.contains("true"));
+
+  let json = poll_join(&srv, &id).await;
+  assert_eq!(json["status"], "denied");
+  assert!(
+    json.get("grant").is_none(),
+    "a denied join must never carry a grant"
+  );
+  assert_eq!(poll_join(&srv, &id).await["status"], "denied");
+  assert_eq!(srv.registry.count(), 0);
   srv.stop().await;
 }
 
 #[tokio::test]
-async fn ws_with_bad_token_fails_handshake() {
+async fn approved_viewer_gets_grant_and_offer() {
   let mut srv = start(true).await;
-  let err = ws_connect(srv.addr, "/ws/not-the-token").await;
-  assert!(err.is_err(), "handshake must fail for invalid token");
-  srv.stop().await;
-}
-
-#[tokio::test]
-async fn accepted_viewer_receives_waiting_then_offer() {
-  let mut srv = start(true).await;
-  let mut stream = ws_connect(srv.addr, &format!("/ws/{}", srv.token))
+  let grant = join_and_grant(&srv).await;
+  let mut stream = ws_connect(srv.addr, &format!("/ws/{grant}"))
     .await
-    .expect("ws connects");
-
-  let waiting = next_json(&mut stream).await;
-  assert_eq!(waiting["type"], "waiting");
+    .expect("grant authenticates the socket");
 
   let offer = next_json(&mut stream).await;
   assert_eq!(offer["type"], "offer");
@@ -290,67 +360,160 @@ async fn accepted_viewer_receives_waiting_then_offer() {
 }
 
 #[tokio::test]
-async fn declined_viewer_gets_error_and_is_not_registered() {
-  let mut srv = start_manual().await;
-  let mut stream = ws_connect(srv.addr, &format!("/ws/{}", srv.token))
+async fn grant_is_single_use() {
+  let mut srv = start(true).await;
+  let grant = join_and_grant(&srv).await;
+  let mut stream = ws_connect(srv.addr, &format!("/ws/{grant}"))
     .await
-    .expect("ws connects");
-
-  let waiting = next_json(&mut stream).await;
-  assert_eq!(waiting["type"], "waiting");
-
-  let pending = wait_pending_json(&srv).await;
-  let id = pending["id"].as_str().expect("pending id").to_owned();
-  let (status, _) = http_request(
-    srv.addr,
-    "POST",
-    &format!("/api/admin/pending/{id}/deny?{}", srv.admin_query()),
-  )
-  .await;
-  assert_eq!(status, 200);
-
-  let error = next_json(&mut stream).await;
-  assert_eq!(error["type"], "error");
-
-  // Give the server a moment to deregister, then check.
+    .expect("first redeem works");
+  let _offer = next_json(&mut stream).await;
+  stream.close(None).await.ok();
   tokio::time::sleep(Duration::from_millis(200)).await;
+
+  let second = ws_connect(srv.addr, &format!("/ws/{grant}")).await;
+  assert!(
+    second.is_err(),
+    "a redeemed grant must not authenticate again"
+  );
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn garbage_grant_fails_handshake() {
+  let mut srv = start(true).await;
+  for path in ["/ws/", "/ws/x", "/ws/not-the-grant"] {
+    let err = ws_connect(srv.addr, path).await;
+    assert!(err.is_err(), "{path} must not authenticate");
+  }
   assert_eq!(srv.registry.count(), 0);
   srv.stop().await;
 }
 
 #[tokio::test]
-async fn viewer_token_cannot_access_admin_apis() {
-  let mut srv = start(true).await;
-  let viewer = srv.token.to_string();
+async fn join_requests_are_bounded() {
+  let mut srv = start_manual().await;
+  // The approval pool (16) saturates before the join table: further
+  // cheap POSTs are rejected instead of piling up pending state.
+  for _ in 0..16 {
+    let (status, _) = http_request(srv.addr, "POST", "/api/join").await;
+    assert_eq!(status, 201);
+  }
+  let (status, _) = http_request(srv.addr, "POST", "/api/join").await;
+  assert_eq!(status, 429, "saturated pool answers fail-closed");
+  srv.stop().await;
+}
 
-  // The admin dashboard and every API reject the viewer token and no token.
+#[tokio::test]
+async fn auto_accept_admits_without_a_host_prompt() {
+  let mut srv = start(true).await;
+  let id = join(&srv).await;
+  let grant = wait_approved(&srv, &id).await;
+  let mut stream = ws_connect(srv.addr, &format!("/ws/{grant}"))
+    .await
+    .expect("auto-accepted join streams");
+  let offer = next_json(&mut stream).await;
+  assert_eq!(offer["type"], "offer");
+  stream.close(None).await.ok();
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn multiple_viewers_connect_independently() {
+  let mut srv = start(true).await;
+  let id_a = join(&srv).await;
+  let grant_a = wait_approved(&srv, &id_a).await;
+  let id_b = join(&srv).await;
+  let grant_b = wait_approved(&srv, &id_b).await;
+  assert_ne!(grant_a, grant_b, "grants are per-peer");
+
+  let mut stream_a = ws_connect(srv.addr, &format!("/ws/{grant_a}"))
+    .await
+    .expect("viewer A connects");
+  let mut stream_b = ws_connect(srv.addr, &format!("/ws/{grant_b}"))
+    .await
+    .expect("viewer B connects");
+  assert_eq!(next_json(&mut stream_a).await["type"], "offer");
+  assert_eq!(next_json(&mut stream_b).await["type"], "offer");
+  assert_eq!(srv.registry.count(), 2);
+
+  // Kicking A leaves B serving.
+  let json = admin_state(&srv).await;
+  let ids: Vec<String> = json["peers"]
+    .as_array()
+    .expect("peers array")
+    .iter()
+    .filter_map(|p| p["id"].as_str().map(str::to_owned))
+    .collect();
+  assert_eq!(ids.len(), 2);
+  assert!(
+    ids.contains(&id_a) && ids.contains(&id_b),
+    "the admin state exposes the join ids as peer ids"
+  );
+  let (status, _) = http_request(
+    srv.addr,
+    "POST",
+    &format!("/api/admin/peers/{id_a}/disconnect?{}", srv.admin_query()),
+  )
+  .await;
+  assert_eq!(status, 200);
+  let _msg = next_json_type(&mut stream_a, "disconnected").await;
+  // The real viewer closes its socket on the notice (viewer.js does).
+  stream_a.close(None).await.ok();
+  for _ in 0..100 {
+    if srv.registry.count() == 1 {
+      break;
+    }
+    tokio::time::sleep(Duration::from_millis(25)).await;
+  }
+  assert_eq!(srv.registry.count(), 1, "kicking A leaves B connected");
+  let (status, _) = http_request(srv.addr, "GET", "/health").await;
+  assert_eq!(status, 200);
+
+  stream_b.close(None).await.ok();
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn viewer_grant_cannot_access_admin_apis() {
+  let mut srv = start(true).await;
+  let grant = join_and_grant(&srv).await;
+
+  // The admin dashboard and every API reject the viewer grant and no token.
   for path in [
-    format!("/admin/{viewer}"),
-    format!("/api/admin/state?token={viewer}"),
+    format!("/admin/{grant}"),
+    format!("/api/admin/state?token={grant}"),
     "/api/admin/state".to_owned(),
-    format!("/api/admin/qr?token={viewer}"),
+    format!("/api/admin/qr?token={grant}"),
     "/api/admin/qr".to_owned(),
   ] {
     let (status, _) = http_request(srv.addr, "GET", &path).await;
-    assert_eq!(
-      status, 404,
-      "{path} must not be reachable with a viewer token"
-    );
+    assert_eq!(status, 404, "{path} must not be reachable with a grant");
   }
   let (status, _) = http_request(
     srv.addr,
     "POST",
-    &format!("/api/admin/pending/deadbeef/allow?token={viewer}"),
+    &format!("/api/admin/pending/deadbeef/allow?token={grant}"),
   )
   .await;
   assert_eq!(status, 404);
   let (status, _) = http_request(
     srv.addr,
     "POST",
-    &format!("/api/admin/peers/deadbeef/disconnect?token={viewer}"),
+    &format!("/api/admin/peers/deadbeef/disconnect?token={grant}"),
   )
   .await;
   assert_eq!(status, 404);
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn admin_token_is_not_a_signaling_grant() {
+  let mut srv = start(true).await;
+  let err = ws_connect(srv.addr, &format!("/ws/{}", srv.admin_token)).await;
+  assert!(
+    err.is_err(),
+    "the admin token must not authenticate the signaling socket"
+  );
   srv.stop().await;
 }
 
@@ -366,57 +529,69 @@ async fn admin_page_and_state_require_admin_token() {
   assert_eq!(json["source"]["label"], "Test Display");
   assert_eq!(json["source"]["width"], 1920);
   assert_eq!(json["fps"]["target"], 30);
+  assert_eq!(
+    json["viewerUrl"].as_str(),
+    Some("http://lumen.local:0"),
+    "the canonical viewer URL is the stable entrypoint, no token path"
+  );
   assert!(
-    json["viewerUrl"]
+    !json["viewerUrl"]
       .as_str()
       .is_some_and(|u| u.contains("/s/"))
   );
   assert!(json["pending"].is_array());
   assert!(json["peers"].is_array());
+
+  let (status, _) = http_request(srv.addr, "GET", "/admin/wrong-token").await;
+  assert_eq!(status, 404);
   srv.stop().await;
 }
 
 #[tokio::test]
 async fn admin_can_approve_pending_viewer() {
   let mut srv = start_manual().await;
-  let mut stream = ws_connect(srv.addr, &format!("/ws/{}", srv.token))
-    .await
-    .expect("ws connects");
-  let waiting = next_json(&mut stream).await;
-  assert_eq!(waiting["type"], "waiting");
+  let id = join(&srv).await;
 
   let pending = wait_pending_json(&srv).await;
-  let id = pending["id"].as_str().expect("pending id").to_owned();
-  assert_eq!(pending["address"], "127.0.0.1");
+  let pending_id = pending["id"].as_str().expect("pending id").to_owned();
+  assert_eq!(pending_id, id);
 
   let (status, _) = http_request(
     srv.addr,
     "POST",
-    &format!("/api/admin/pending/{id}/allow?{}", srv.admin_query()),
+    &format!(
+      "/api/admin/pending/{pending_id}/allow?{}",
+      srv.admin_query()
+    ),
   )
   .await;
   assert_eq!(status, 200);
 
+  let grant = wait_approved(&srv, &id).await;
+  let mut stream = ws_connect(srv.addr, &format!("/ws/{grant}"))
+    .await
+    .expect("approved join connects");
   let offer = next_json_type(&mut stream, "offer").await;
   assert!(offer["sdp"].as_str().is_some());
 
   // The decided request leaves the pending list.
   let json = admin_state(&srv).await;
   assert_eq!(json["pending"].as_array().map(Vec::len), Some(0));
+  stream.close(None).await.ok();
   srv.stop().await;
 }
 
 #[tokio::test]
 async fn admin_can_disconnect_viewer_without_stopping_server() {
   let mut srv = start(true).await;
-  let mut stream = ws_connect(srv.addr, &format!("/ws/{}", srv.token))
+  let grant = join_and_grant(&srv).await;
+  let mut stream = ws_connect(srv.addr, &format!("/ws/{grant}"))
     .await
     .expect("ws connects");
-  let _waiting = next_json(&mut stream).await;
   let offer = next_json(&mut stream).await;
   assert_eq!(offer["type"], "offer");
 
-  // Find the peer id via the admin API.
+  // The peer id is the join request id.
   let json = admin_state(&srv).await;
   let id = json["peers"][0]["id"].as_str().expect("peer id").to_owned();
 
@@ -455,10 +630,10 @@ async fn admin_qr_serves_svg() {
 #[tokio::test]
 async fn malformed_signaling_frames_are_ignored() {
   let mut srv = start(true).await;
-  let mut stream = ws_connect(srv.addr, &format!("/ws/{}", srv.token))
+  let grant = join_and_grant(&srv).await;
+  let mut stream = ws_connect(srv.addr, &format!("/ws/{grant}"))
     .await
     .expect("ws connects");
-  let _waiting = next_json(&mut stream).await;
   let _offer = next_json(&mut stream).await;
 
   stream

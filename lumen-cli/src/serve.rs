@@ -10,7 +10,6 @@ use qrcode::QrCode;
 use qrcode::render::unicode::Dense1x2;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use url::Url;
 
 use crate::ServeArgs;
 use crate::network::LanInterface;
@@ -99,7 +98,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
   }
 
   // ── session + services ──
-  let token = SessionToken::generate()?;
   let admin_token = SessionToken::generate()?;
   let (authorizer, approvals) = Authorizer::channel(16);
   let registry = Arc::new(PeerRegistry::new());
@@ -118,15 +116,25 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
   )?;
 
   let port = args.port.unwrap_or(3131);
-  let url = Url::parse(&format!("http://{}:{}", iface.ip, port))
-    .expect("valid url")
-    .join(&format!("/s/{token}"))
-    .expect("valid path");
-  let stream = build_stream_info(&args, &cfg, dims, &url, pipeline.audio.is_some());
+
+  // Advertise the stable `lumen.local` hostname. Discovery is best
+  // effort: a failure only costs the friendly URL, never the run.
+  let mdns = match crate::mdns::advertise(port, iface.ip) {
+    Ok(guard) => Some(guard),
+    Err(e) => {
+      tracing::warn!(
+        "could not advertise {} via mDNS ({e}); viewers must use the IP URL",
+        crate::mdns::HOSTNAME
+      );
+      None
+    }
+  };
+  let viewer_url = crate::mdns::viewer_url(mdns.is_some(), iface.ip, port);
+  let fallback_url = crate::mdns::fallback_url(iface.ip, port);
+  let stream = build_stream_info(&args, &cfg, dims, &viewer_url, pipeline.audio.is_some());
 
   let server = spawn_server(ServerConfig {
     port,
-    token: token.clone(),
     admin_token: admin_token.clone(),
     admin_allow_lan: args.allow_lan_admin,
     authorizer,
@@ -142,7 +150,15 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
   })
   .await?;
 
-  print_banner(&args, &iface, server.addr.port(), &admin_token, &stream);
+  print_banner(
+    &args,
+    &iface,
+    server.addr.port(),
+    &admin_token,
+    &stream,
+    &fallback_url,
+    mdns.is_some(),
+  );
 
   let stats_task = args.verbose.then(|| {
     spawn_stats_loop(
@@ -160,7 +176,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     spawn_approval_loop(approvals, args.auto_accept, shutdown.clone());
   }
 
-  wait_shutdown(server, pipeline, stats_task, shutdown).await
+  wait_shutdown(server, pipeline, stats_task, shutdown, mdns).await
 }
 
 /// Graceful shutdown: cancel, drain the server, stop the pipeline, reap the
@@ -170,6 +186,7 @@ async fn wait_shutdown(
   pipeline: pipeline::PipelineHandle,
   stats_task: Option<tokio::task::JoinHandle<()>>,
   shutdown: CancellationToken,
+  mdns: Option<crate::mdns::MdnsGuard>,
 ) -> anyhow::Result<()> {
   tokio::signal::ctrl_c()
     .await
@@ -178,6 +195,9 @@ async fn wait_shutdown(
   shutdown.cancel();
 
   server.join().await?;
+  if let Some(guard) = mdns {
+    guard.stop();
+  }
   pipeline.shutdown().await;
   if let Some(task) = stats_task {
     let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
@@ -274,7 +294,7 @@ fn build_stream_info(
   args: &ServeArgs,
   cfg: &StreamConfig,
   dims: lumen_core::Dimensions,
-  url: &Url,
+  viewer_url: &str,
   audio_enabled: bool,
 ) -> StreamInfo {
   StreamInfo {
@@ -285,7 +305,7 @@ fn build_stream_info(
     quality: cfg.quality.to_string(),
     bitrate_label: cfg.effective_bitrate(dims).to_string(),
     audio_label: audio_label(cfg, audio_enabled),
-    viewer_url: url.to_string(),
+    viewer_url: viewer_url.to_owned(),
   }
 }
 
@@ -295,6 +315,8 @@ fn print_banner(
   port: u16,
   admin_token: &SessionToken,
   stream: &StreamInfo,
+  fallback_url: &str,
+  mdns_ok: bool,
 ) {
   println!();
   println!("Lumen screen sharing server started.");
@@ -307,10 +329,17 @@ fn print_banner(
   println!("Audio:        {}", stream.audio_label);
   println!("Listening on: {}:{}", iface.ip, port);
   println!();
-  println!("Open:");
-  println!("{}", stream.viewer_url);
+  println!("Open on any device:");
   println!();
-  println!("Host dashboard (this computer):");
+  println!("  {}", stream.viewer_url);
+  println!();
+  if mdns_ok {
+    println!("IP fallback:");
+    println!();
+    println!("  {fallback_url}");
+    println!();
+  }
+  println!("Host dashboard:");
   println!("http://127.0.0.1:{port}/admin/{admin_token}");
   if args.allow_lan_admin {
     println!("LAN admin access enabled (--allow-lan-admin):");
@@ -318,6 +347,8 @@ fn print_banner(
   }
   println!();
   if !args.no_qr {
+    // The QR carries the canonical entrypoint: the stable hostname when
+    // mDNS is up, the IP URL otherwise.
     match QrCode::new(&stream.viewer_url) {
       Ok(code) => println!("{}", code.render::<Dense1x2>().build()),
       Err(e) => tracing::warn!("could not render QR code: {e}"),

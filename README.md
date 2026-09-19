@@ -29,6 +29,7 @@ Works on **macOS 13+** (ScreenCaptureKit, video + system audio) and **Windows 10
 ## Features
 
 - **Zero-setup viewer** — any modern browser on the LAN; nothing to install on the viewing device
+- **Stable entry URL** — `http://lumen.local:3131`, advertised via mDNS/Bonjour; no secrets in the URL, LAN IP fallback printed alongside
 - **Native capture** — ScreenCaptureKit on macOS, Windows.Graphics.Capture on Windows, no FFmpeg
 - **System audio on macOS** — dedicated ScreenCaptureKit audio stream, Opus 48 kHz stereo
 - **Instant mid-session joins** — forced keyframe every 2 s and on every new viewer
@@ -63,7 +64,7 @@ Or build in-tree: `cargo build --release` (→ `target/release/lumen`).
 lumen
 ```
 
-`lumen` prints a viewer URL, a QR code and a **host dashboard** URL. Open the viewer URL (or scan the QR) on any device on the same network, then approve the device in the terminal or on the dashboard unless `--auto-accept` is set. The viewer URL is `http://<lan-ip>:3131/s/<token>`; the bare `http://<lan-ip>:3131/` redirects to it for the host machine's own browser. The dashboard (`http://127.0.0.1:3131/admin/<admin-token>`) is reachable **from the host machine only** unless you pass `--allow-lan-admin`.
+`lumen` prints the viewer entry URL, a QR code and a **host dashboard** URL. Open `http://lumen.local:3131` (or scan the QR) on any device on the same network, then approve the device in the terminal or on the dashboard unless `--auto-accept` is set. `lumen.local` is advertised via mDNS and resolves on any OS with local discovery (macOS, iOS, Android, Windows, most Smart-TV browsers); the banner also prints the **IP fallback** (`http://<lan-ip>:3131`) for networks where `.local` does not resolve — same page, same flow. If mDNS registration fails, `lumen` warns and keeps serving; nothing else changes. The dashboard (`http://127.0.0.1:3131/admin/<admin-token>`) is reachable **from the host machine only** unless you pass `--allow-lan-admin`.
 
 > [!IMPORTANT]
 > **macOS:** the terminal app you run `lumen` from (Terminal, iTerm, Ghostty, …) must be allowed under **System Settings → Privacy & Security → Screen Recording**. The first run registers the request — toggle your terminal on, then **restart it** and run again. Without the permission, `lumen` exits with a clear message instead of crashing.
@@ -145,11 +146,11 @@ One `webrtc-rs` peer connection per viewer (negotiated `recvonly` answer from th
 
 ### Serve
 
-`axum` serves the embedded viewer, the host dashboard and a WebSocket signaling channel per viewer: `waiting → approval → offer → answer → ice`. The viewer adds auto-reconnect, double-tap fullscreen, mute, fit/fill, mirror, screen wake lock, optional WebRTC stats (`RTCPeerConnection.getStats()`) and a retry action on terminal states — all plain HTML/CSS/JS, no frameworks. The dashboard polls a single admin API (`/api/admin/state`) and drives approval/disconnect through `/api/admin/...`.
+`axum` serves the embedded viewer at `/`, the host dashboard and a WebSocket signaling channel per viewer: `join → approval → grant → offer → answer → ice`. Opening the page only creates a **pending join request** (`POST /api/join`); once the host approves, the poll endpoint hands the viewer an **ephemeral single-use grant** (OS-random, short TTL, constant-time checked) that authenticates exactly one signaling socket — no long-lived secret ever appears in a URL. The viewer adds auto-reconnect (a fresh join re-asks the host), double-tap fullscreen, mute, fit/fill, mirror, screen wake lock, optional WebRTC stats (`RTCPeerConnection.getStats()`) and a retry action on terminal states — all plain HTML/CSS/JS, no frameworks, no vendor detection. The dashboard polls a single admin API (`/api/admin/state`) and drives approval/disconnect through `/api/admin/...`. Join requests are bounded (saturated queue answers `429`), so a cheap repeat-POST cannot pile up state.
 
 ## Security
 
-- Every `serve` run generates two fresh **256-bit tokens** (URL-safe base64): a **viewer token** carried by the viewer URL and an **admin token** carried by the dashboard URL. Viewer and signaling routes answer `404` to unknown viewer tokens; admin routes answer `404` to missing or wrong admin tokens (fail closed, no enumeration) and `403` when the client is not on localhost. A viewer token never reaches an admin endpoint.
+- The viewer page at `/` is **LAN-discoverable by design** — reaching it grants nothing. Stream access requires the host's **approval** and an **ephemeral session grant**: after approval the server issues a fresh **256-bit** (URL-safe base64, OS CSPRNG) grant with a short TTL, redeemable exactly once by the signaling socket and checked in constant time; expired, reused or forged grants answer `404`. No secret ever lives in the viewer URL. The **admin token** is a separate 256-bit secret carried by the dashboard URL: admin routes answer `404` to missing or wrong admin tokens (fail closed, no enumeration) and `403` when the client is not on localhost. A viewer grant never reaches an admin endpoint, and the admin token never authenticates signaling.
 - The admin surface (`/admin/<admin-token>`, `/api/admin/*`) is **localhost-only by default**; `--allow-lan-admin` extends it to the LAN. Admin clients can see the pending queue, **Allow/Deny** viewers (`POST /api/admin/pending/<id>/allow|deny`), and **kick** connected ones (`POST /api/admin/peers/<id>/disconnect`).
 - New viewers are approved on the **terminal prompt or the dashboard** (browser name and device are parsed from the user agent) — first responder wins — unless `--auto-accept` is set. Approval is fail-closed: a saturated pending queue denies immediately, and non-interactive runs without a dashboard decision never leak a peer through.
 - Traffic is **LAN-only**: ICE is restricted to LAN addresses, mDNS `.local` candidates are resolved in query mode, and a loopback socket is bound only for a viewer that is itself on loopback. The HTTP server is plain `http://` (no TLS certificate warnings), but the media itself — video and audio — is SRTP-encrypted end to end. Do not expose the port beyond your LAN.

@@ -1,7 +1,10 @@
 /* Lumen viewer — plain ES2020, no dependencies.
  *
+ * Entry: POST /api/join (no secret), poll GET /api/join/<id> until the
+ * host approves, then open the signaling socket with the ephemeral grant.
+ *
  * Protocol (JSON over WebSocket, tagged `type`):
- *   host → viewer: waiting | offer | iceCandidate | disconnected | error
+ *   host → viewer: connected | offer | iceCandidate | disconnected | error
  *   viewer → host: answer | iceCandidate
  */
 (() => {
@@ -34,7 +37,7 @@
   // the attribute itself, or the markup state never clears.
   const setHidden = (el, on) => el.toggleAttribute("hidden", on);
 
-  const token = (location.pathname.split("/").filter(Boolean)[1] || "").trim();
+
 
   /* ---------------- strings ---------------- */
 
@@ -58,8 +61,9 @@
     endedMsg: "The host disconnected this device.",
     blockedTitle: "Not allowed",
     blockedMsg: "The host refused this connection.",
-    badLinkTitle: "Bad link",
-    badLinkMsg: "This URL is missing its session token.",
+    unsupportedTitle: "Not supported",
+    unsupportedMsg: "This browser cannot stream: WebRTC is unavailable.",
+    busyMsg: "The host is busy with too many devices. Retrying…",
     mute: "Mute",
     unmute: "Unmute",
     fullscreen: "Toggle fullscreen",
@@ -190,9 +194,9 @@
     video.classList.remove("live");
     currentOverlay = { titleKey, msgKey, mode, rawMessage };
     renderOverlay();
-    // Terminal states are the only dead end; offer retry (never for a
-    // malformed link — there is nothing to reconnect to).
-    setHidden(btnRetry, !terminal || !token);
+    // Terminal states are the only dead end; offer retry — a fresh
+    // join is always possible, the host decides again.
+    setHidden(btnRetry, !terminal);
   }
 
   function setStatusOnly(key, kind) {
@@ -538,44 +542,102 @@
   let videoStream = null; // video-track-only view; what the <video> plays
   let reconnectTimer = null;
   let reconnectDelay = 1000;
-  let terminal = false; // session gone: invalid token, declined, host ended
+  let joinTimer = null;
+  let joinId = null;
+  let terminal = false; // gone: denied, host ended, unsupported browser
 
-  async function validateSession() {
-    try {
-      const res = await fetch(`/api/session/${encodeURIComponent(token)}`, {
-        cache: "no-store",
-      });
-      return res.ok;
-    } catch {
-      return false; // network hiccup: treat as temporarily invalid, retry
-    }
-  }
-
-  function wsUrl() {
-    const scheme = location.protocol === "https:" ? "wss" : "ws";
-    return `${scheme}://${location.host}/ws/${encodeURIComponent(token)}`;
-  }
-
-  function connect() {
+  // Join flow: POST /api/join (no secret, no URL token) → poll status →
+  // the host approves → the server hands out an ephemeral single-use
+  // grant → the signaling socket opens with it. A dropped socket means a
+  // fresh join (the host is asked again), matching the per-connection
+  // approval semantics of the tokenized flow this replaces.
+  async function connect() {
     if (terminal) return;
     clearTimeout(reconnectTimer);
+    clearTimeout(joinTimer);
+    joinId = null;
     setStatus("connecting", "");
     showOverlay("Lumen", "connectingMsg", "spinner");
-
-    validateSession().then((ok) => {
+    try {
+      const res = await fetch("/api/join", { method: "POST", cache: "no-store" });
       if (terminal) return;
-      if (!ok) {
-        // Could be server restarting; keep retrying unless we know it is gone.
+      if (res.status === 429) {
+        // The host's pending queue is bounded and full: back off.
+        scheduleReconnect("busyMsg");
+        return;
+      }
+      if (!res.ok) {
+        // Could be a server restart; keep retrying unless it is gone.
         scheduleReconnect("waitingServerMsg");
         return;
       }
-      openSocket();
-    });
+      const data = await res.json();
+      if (terminal) return;
+      if (!data || !data.requestId) {
+        scheduleReconnect("failedMsg");
+        return;
+      }
+      joinId = data.requestId;
+      pollJoin();
+    } catch {
+      if (!terminal) scheduleReconnect("failedMsg");
+    }
   }
 
-  function openSocket() {
+  function pollJoin() {
+    setStatus("waitingHost", "");
+    showOverlay("waitingTitle", "waitingMsg", "spinner");
+    const step = async () => {
+      if (terminal || !joinId) return;
+      let data = null;
+      let gone = false;
+      let lost = false;
+      try {
+        const res = await fetch(`/api/join/${encodeURIComponent(joinId)}`, {
+          cache: "no-store",
+        });
+        if (res.status === 404) gone = true;
+        else if (!res.ok) lost = true;
+        else data = await res.json();
+      } catch {
+        lost = true;
+      }
+      if (terminal) return;
+      if (gone) {
+        // The request expired (host restarted, abandoned poll): start over.
+        scheduleReconnect("waitingServerMsg");
+        return;
+      }
+      if (lost) {
+        scheduleReconnect("lostMsg");
+        return;
+      }
+      switch (data.status) {
+        case "approved":
+          openSocket(data.grant);
+          return;
+        case "denied":
+          terminal = true;
+          teardownPeer();
+          closeSignaling();
+          setStatusOnly("blocked", "bad");
+          showOverlay("blockedTitle", "blockedMsg", "error");
+          return;
+        default:
+          joinTimer = setTimeout(step, 1000);
+      }
+    };
+    step();
+  }
+
+  function openSocket(grant) {
     closeSignaling();
-    ws = new WebSocket(wsUrl());
+    setStatus("connecting", "");
+    showOverlay("Lumen", "negotiatingMsg", "spinner");
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(
+      `${scheme}://${location.host}/ws/${encodeURIComponent(grant)}`,
+    );
     ws.onmessage = (event) => {
       let msg;
       try {
@@ -654,10 +716,6 @@
 
   function handleHostMessage(msg) {
     switch (msg.type) {
-      case "waiting":
-        setStatus("waitingHost", "");
-        showOverlay("waitingTitle", "waitingMsg", "spinner");
-        return;
       case "offer":
         startPeer(msg.sdp);
         return;
@@ -676,8 +734,8 @@
         setStatusOnly("live", "live");
         return;
       case "disconnected":
-        // The host ended the session; the run's token is dead forever, so
-        // stop auto-retrying and hand the choice to the viewer.
+        // The host ended the session; stop auto-retrying and hand the
+        // choice (rejoin from scratch) to the viewer.
         terminal = true;
         teardownPeer();
         closeSignaling();
@@ -906,9 +964,11 @@
   btnSettings.setAttribute("aria-label", t("settings"));
   btnReconnect.setAttribute("aria-label", t("reconnect"));
 
-  if (!token) {
+  // Capability detection, not vendor detection: any browser with
+  // RTCPeerConnection streams; everything else gets a clear message.
+  if (!("RTCPeerConnection" in window)) {
     terminal = true;
-    showOverlay("badLinkTitle", "badLinkMsg", "error");
+    showOverlay("unsupportedTitle", "unsupportedMsg", "error");
   } else {
     connect();
   }

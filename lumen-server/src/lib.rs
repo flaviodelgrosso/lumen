@@ -1,29 +1,37 @@
-//! Axum HTTP/WebSocket server: embedded viewer, session API, typed
+//! Axum HTTP/WebSocket server: embedded viewer, join/approval API, typed
 //! signaling, and per-peer media feeding.
 //!
 //! Media never crosses the WebSocket — video and audio flow through
 //! WebRTC. The socket only carries session state and SDP/ICE exchange.
 //!
-//! The session modules ([`auth`], [`peer`], [`signal`], [`token`], [`ua`])
-//! hold session tokens, authorization, the peer registry and the typed
-//! signaling protocol. The signaling enums are the single source of truth
-//! for the WebSocket JSON format shared by this server and the embedded
-//! browser viewer.
+//! Viewers enter through `/` with no URL secret: `POST /api/join` parks a
+//! [`join::JoinManager`] request in the host approval queue, the polling
+//! viewer receives an ephemeral post-approval [`grant::GrantStore`] grant,
+//! and the signaling socket authenticates with that grant. The session
+//! modules ([`auth`], [`grant`], [`join`], [`peer`], [`signal`], [`token`],
+//! [`ua`]) hold the approval pool, grant/join state, the peer registry and
+//! the typed signaling protocol. The signaling enums are the single source
+//! of truth for the WebSocket JSON format shared by this server and the
+//! embedded browser viewer.
 
 pub mod auth;
+pub mod grant;
+pub mod join;
 pub mod peer;
 pub mod signal;
 pub mod token;
 pub mod ua;
 
 pub use auth::{ApprovalQueue, AuthDecision, AuthError, Authorizer, PendingView};
+pub use grant::GrantStore;
+pub use join::{JoinError, JoinManager, JoinStatus};
 pub use peer::{PeerInfo, PeerRegistry};
 pub use signal::{HostMessage, SignalMessage, ViewerMessage};
 pub use token::{PeerId, SessionToken};
 pub use ua::describe_user_agent;
 
 use std::fmt::Write as _;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -106,7 +114,8 @@ pub struct StreamInfo {
   pub bitrate_label: String,
   /// Audio description (`Opus 128k stereo`, `off`, `unavailable`).
   pub audio_label: String,
-  /// Canonical viewer URL (LAN address, includes the viewer token).
+  /// Canonical viewer URL (stable `lumen.local` hostname when mDNS
+  /// registration succeeded, LAN IP otherwise). No secret in the URL.
   pub viewer_url: String,
 }
 
@@ -114,8 +123,6 @@ pub struct StreamInfo {
 pub struct ServerConfig {
   /// TCP port to bind (all interfaces).
   pub port: u16,
-  /// Secret viewer token for this `serve` run.
-  pub token: SessionToken,
   /// Secret admin token: grants the dashboard and `/api/admin/*`.
   pub admin_token: SessionToken,
   /// Allow non-localhost clients on the admin surface (default off).
@@ -180,12 +187,14 @@ pub async fn spawn_server(cfg: ServerConfig) -> Result<ServerHandle, ServerError
     source,
   })?;
 
+  let grants = GrantStore::new();
+  let joins = JoinManager::new(cfg.authorizer, grants.clone());
   let state = Arc::new(AppState {
-    token: cfg.token,
     admin_token: cfg.admin_token,
     admin_allow_lan: cfg.admin_allow_lan,
-    authorizer: cfg.authorizer,
     approvals: cfg.approvals,
+    joins,
+    grants,
     registry: cfg.registry,
     frames: cfg.frames,
     audio: cfg.audio,
@@ -211,11 +220,11 @@ pub async fn spawn_server(cfg: ServerConfig) -> Result<ServerHandle, ServerError
 }
 
 struct AppState {
-  token: SessionToken,
   admin_token: SessionToken,
   admin_allow_lan: bool,
-  authorizer: Authorizer,
   approvals: ApprovalQueue,
+  joins: JoinManager,
+  grants: GrantStore,
   registry: Arc<PeerRegistry>,
   frames: broadcast::Sender<Arc<EncodedFrame>>,
   audio: Option<broadcast::Sender<Arc<EncodedAudioFrame>>>,
@@ -261,7 +270,8 @@ impl AppState {
 fn build_router(state: Arc<AppState>) -> Router {
   Router::new()
     .route("/", get(root))
-    .route("/s/{token}", get(viewer_page))
+    .route("/api/join", post(join_create))
+    .route("/api/join/{id}", get(join_poll))
     .route(
       "/viewer.css",
       get(|| async { asset_response("viewer.css") }),
@@ -273,31 +283,20 @@ fn build_router(state: Arc<AppState>) -> Router {
       "/health",
       get(|| async { axum::Json(serde_json::json!({"status": "ok"})) }),
     )
-    .route("/api/session/{token}", get(session_check))
     .route("/admin/{token}", get(admin_page))
     .route("/api/admin/state", get(admin_state))
     .route("/api/admin/qr", get(admin_qr))
     .route("/api/admin/pending/{id}/allow", post(admin_allow))
     .route("/api/admin/pending/{id}/deny", post(admin_deny))
     .route("/api/admin/peers/{id}/disconnect", post(admin_disconnect))
-    .route("/ws/{token}", get(ws_upgrade))
+    .route("/ws/{grant}", get(ws_upgrade))
     .with_state(state)
 }
 
-async fn root(State(state): State<Arc<AppState>>) -> Response {
-  // Convenience for the host machine's own browser.
-  axum::response::Redirect::temporary(&format!("/s/{}", state.token)).into_response()
-}
-
-async fn viewer_page(State(state): State<Arc<AppState>>, Path(token): Path<String>) -> Response {
-  if !state.token.matches(&token) {
-    return (
-      StatusCode::NOT_FOUND,
-      [(CONTENT_TYPE, "text/html; charset=utf-8")],
-      INVALID_LINK_HTML,
-    )
-      .into_response();
-  }
+/// The viewer page is the canonical entrypoint: reachable by anyone on
+/// the LAN, and it carries no capability — stream access requires host
+/// approval plus an ephemeral grant (see [`join_create`]).
+async fn root() -> Response {
   asset_response("index.html")
 }
 
@@ -309,19 +308,58 @@ const INVALID_LINK_HTML: &str = r#"<!doctype html>
  <p style="color:#8a94a3">This Lumen session is no longer active. Start a new
  <code>lumen serve</code> and scan the QR code again.</p></div></div>"#;
 
-async fn session_check(
+/// Create a join request: parks the viewer in the host approval queue.
+/// The response carries only the request id — no secret, no capability.
+async fn join_create(
   State(state): State<Arc<AppState>>,
-  Path(token): Path<String>,
-) -> impl IntoResponse {
-  if state.token.matches(&token) {
-    axum::Json(serde_json::json!({"valid": true})).into_response()
-  } else {
-    (
-      StatusCode::NOT_FOUND,
-      axum::Json(serde_json::json!({"valid": false})),
+  headers: HeaderMap,
+  ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> Response {
+  let Ok(id) = PeerId::generate() else {
+    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+  };
+  let info = PeerInfo {
+    id,
+    address: Some(addr.ip()),
+    user_agent: headers
+      .get(axum::http::header::USER_AGENT)
+      .and_then(|v| v.to_str().ok())
+      .map(str::to_owned),
+    joined_at: Instant::now(),
+  };
+  match state.joins.create(info) {
+    Ok(id) => (
+      StatusCode::CREATED,
+      axum::Json(serde_json::json!({"requestId": id.to_string()})),
     )
-      .into_response()
+      .into_response(),
+    // Bounded state: a saturated approval pool or join table answers 429
+    // (fail closed) instead of piling up pending requests.
+    Err(JoinError::Full | JoinError::NoApprover) => StatusCode::TOO_MANY_REQUESTS.into_response(),
+    Err(JoinError::Random(_)) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
   }
+}
+
+/// Poll a join request. On approval the first poll issues the ephemeral
+/// single-use grant the viewer redeems on `/ws/<grant>`.
+async fn join_poll(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+  let Ok(parsed) = id.parse::<PeerIdStr>() else {
+    return (
+      StatusCode::NOT_FOUND,
+      axum::Json(serde_json::json!({"status": "gone"})),
+    )
+      .into_response();
+  };
+  let (status, body) = match state.joins.poll(parsed.0) {
+    JoinStatus::Pending => (StatusCode::OK, serde_json::json!({"status": "pending"})),
+    JoinStatus::Approved { grant } => (
+      StatusCode::OK,
+      serde_json::json!({"status": "approved", "grant": grant}),
+    ),
+    JoinStatus::Denied => (StatusCode::OK, serde_json::json!({"status": "denied"})),
+    JoinStatus::Gone => (StatusCode::NOT_FOUND, serde_json::json!({"status": "gone"})),
+  };
+  (status, axum::Json(body)).into_response()
 }
 
 /// Admin origin rule: loopback always, LAN only when explicitly allowed.
@@ -552,21 +590,18 @@ impl std::str::FromStr for PeerIdStr {
   }
 }
 
+/// Signaling entry: the path carries an ephemeral post-approval grant.
+/// Redeeming it (constant-time, single-use, TTL-checked) is what admits
+/// the socket — an unknown, used or expired grant is a plain 404.
 async fn ws_upgrade(
   ws: WebSocketUpgrade,
   State(state): State<Arc<AppState>>,
-  Path(token): Path<String>,
-  headers: HeaderMap,
-  ConnectInfo(addr): ConnectInfo<SocketAddr>,
+  Path(grant): Path<String>,
 ) -> Response {
-  if !state.token.matches(&token) {
-    return (StatusCode::NOT_FOUND, "invalid session token").into_response();
-  }
-  let user_agent = headers
-    .get(axum::http::header::USER_AGENT)
-    .and_then(|v| v.to_str().ok())
-    .map(str::to_owned);
-  ws.on_upgrade(move |socket| handle_socket(socket, state, addr.ip(), user_agent))
+  let Some(info) = state.grants.redeem(&grant) else {
+    return (StatusCode::NOT_FOUND, "invalid or expired grant").into_response();
+  };
+  ws.on_upgrade(move |socket| handle_socket(socket, state, info))
 }
 
 /// UDP addresses to bind for a viewer's ICE agent.
@@ -593,35 +628,15 @@ fn ice_bind_addrs(configured: &[String], viewer: IpAddr) -> Vec<String> {
   bind
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<AppState>, addr: IpAddr, ua: Option<String>) {
+/// Drive one approved viewer: the grant already carries host approval,
+/// so the socket goes straight to registration and negotiation.
+async fn handle_socket(socket: WebSocket, state: Arc<AppState>, info: PeerInfo) {
   let (sink, mut stream) = socket.split();
   let (out_tx, out_rx) = mpsc::unbounded_channel::<HostMessage>();
   let writer = spawn_writer(sink, out_rx);
 
-  let Ok(peer_id) = PeerId::generate() else {
-    return;
-  };
-  let info = PeerInfo {
-    id: peer_id,
-    address: Some(addr),
-    user_agent: ua,
-    joined_at: Instant::now(),
-  };
-  let _ = out_tx.send(HostMessage::Waiting);
-
-  // Host approval gate (fail closed): the viewer is only listed as
-  // connected once the host has admitted it.
-  let allowed = matches!(
-    state.authorizer.request(info.clone()).await,
-    Ok(AuthDecision::Allow)
-  );
-  if !allowed {
-    let _ = out_tx.send(HostMessage::Error {
-      message: "The host declined this connection.".to_owned(),
-    });
-    grace_flush(&writer).await;
-    return;
-  }
+  let peer_id = info.id;
+  let addr = info.address.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
   let handle = state.registry.join(info);
 
   // WebRTC peer with a complete (non-trickle) offer. The media fan-out is
