@@ -1,12 +1,15 @@
 //! System-audio capture behind a portable trait.
 //!
-//! The production implementation opens a dedicated audio-only
-//! `ScreenCaptureKit` stream (macOS 13+) through the `screencapturekit`
-//! crate. SCK delivers audio in the output device's format, so buffers are
-//! normalized to 48 kHz stereo interleaved `f32` — Opus' native rate and
-//! format — via the resampler in [`crate::capture::resample`]. Other platforms report
-//! [`CaptureError::AudioNotSupported`]. Tests use [`FakeAudioCapture`] so
-//! they never need audio hardware.
+//! The native backends open the platform's system-audio path and normalize
+//! captured buffers to 48 kHz stereo interleaved `f32` — Opus' native rate
+//! and format — via the resampler in [`crate::capture::resample`]:
+//!
+//! * macOS (13+): a dedicated audio-only `ScreenCaptureKit` stream through
+//!   the `screencapturekit` crate.
+//! * Windows: WASAPI loopback capture of the default render endpoint.
+//!
+//! Other platforms report [`CaptureError::AudioNotSupported`]. Tests use
+//! [`FakeAudioCapture`] so they never need audio hardware.
 
 use std::time::{Duration, Instant};
 
@@ -31,13 +34,13 @@ pub trait AudioCaptureSource: Send {
 
 /// How long [`AudioCaptureSource::next_audio`] waits before reporting
 /// "nothing yet"; keeps shutdown responsive without a wake-up channel.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Backpressure budget for the capture → pipeline hop (~2 s of buffers);
 /// beyond it the newest buffer is dropped — for live audio, latency beats
 /// backlog.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 const QUEUE_BUFFERS: usize = 64;
 
 #[cfg(target_os = "macos")]
@@ -52,7 +55,7 @@ mod macos {
   use screencapturekit::cm::CMSampleBuffer;
   use screencapturekit::prelude::*;
 
-  use super::{POLL_INTERVAL, QUEUE_BUFFERS};
+  use super::{POLL_INTERVAL, QUEUE_BUFFERS, deinterleave, interleave, mix_to_stereo};
   use crate::capture::resample::LaneResampler;
   use crate::capture::{CaptureError, FrameSender, SendOutcome, require_permission};
 
@@ -355,22 +358,6 @@ mod macos {
     )
   }
 
-  /// Split interleaved LE `f32` bytes into one `f32` plane per channel.
-  pub(super) fn deinterleave(data: &[u8], channels: usize) -> Option<Vec<Vec<f32>>> {
-    let frame_bytes = channels.checked_mul(4)?;
-    if frame_bytes == 0 || data.len() % frame_bytes != 0 {
-      return None;
-    }
-    let frames = data.len() / frame_bytes;
-    let mut planes = vec![Vec::with_capacity(frames); channels];
-    for chunk in data.chunks_exact(frame_bytes) {
-      for (plane, sample) in planes.iter_mut().zip(chunk.chunks_exact(4)) {
-        plane.push(f32::from_le_bytes(sample.try_into().expect("4 bytes")));
-      }
-    }
-    Some(planes)
-  }
-
   /// Decode LE `f32` bytes into samples.
   fn bytes_to_f32(data: &[u8]) -> Vec<f32> {
     data
@@ -378,66 +365,95 @@ mod macos {
       .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("4 bytes")))
       .collect()
   }
+}
 
-  /// Downmix any channel count to stereo: 2 passes through, 1 duplicates,
-  /// more averages even channels into L and odd into R (5.1 → stereo).
-  #[expect(
-    clippy::cast_possible_truncation,
-    reason = "the mean of at most 8 f32 samples; error is far below one \
+/// Split interleaved LE `f32` bytes into one `f32` plane per channel.
+fn deinterleave(data: &[u8], channels: usize) -> Option<Vec<Vec<f32>>> {
+  let frame_bytes = channels.checked_mul(4)?;
+  if frame_bytes == 0 || data.len() % frame_bytes != 0 {
+    return None;
+  }
+  let frames = data.len() / frame_bytes;
+  let mut planes = vec![Vec::with_capacity(frames); channels];
+  for chunk in data.chunks_exact(frame_bytes) {
+    for (plane, sample) in planes.iter_mut().zip(chunk.chunks_exact(4)) {
+      plane.push(f32::from_le_bytes(sample.try_into().expect("4 bytes")));
+    }
+  }
+  Some(planes)
+}
+
+/// Downmix any channel count to stereo: 2 passes through, 1 duplicates,
+/// more averages even channels into L and odd into R (5.1 → stereo).
+#[expect(
+  clippy::cast_possible_truncation,
+  reason = "the mean of at most 8 f32 samples; error is far below one \
                   audio LSB"
-  )]
-  pub(super) fn mix_to_stereo(planes: &[Vec<f32>]) -> (Vec<f32>, Vec<f32>) {
-    match planes.len() {
-      0 => (Vec::new(), Vec::new()),
-      1 => (planes[0].clone(), planes[0].clone()),
-      2 => (planes[0].clone(), planes[1].clone()),
-      _ => {
-        let frames = planes.iter().map(Vec::len).min().unwrap_or(0);
-        let mut left = vec![0.0_f32; frames];
-        let mut right = vec![0.0_f32; frames];
-        for (frame, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
-          let mut sum_l = 0.0_f64;
-          let mut sum_r = 0.0_f64;
-          let mut count_l = 0.0_f64;
-          let mut count_r = 0.0_f64;
-          for (c, plane) in planes.iter().enumerate() {
-            let value = f64::from(plane[frame]);
-            if c % 2 == 0 {
-              sum_l += value;
-              count_l += 1.0;
-            } else {
-              sum_r += value;
-              count_r += 1.0;
-            }
+)]
+fn mix_to_stereo(planes: &[Vec<f32>]) -> (Vec<f32>, Vec<f32>) {
+  match planes.len() {
+    0 => (Vec::new(), Vec::new()),
+    1 => (planes[0].clone(), planes[0].clone()),
+    2 => (planes[0].clone(), planes[1].clone()),
+    _ => {
+      let frames = planes.iter().map(Vec::len).min().unwrap_or(0);
+      let mut left = vec![0.0_f32; frames];
+      let mut right = vec![0.0_f32; frames];
+      for (frame, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+        let mut sum_l = 0.0_f64;
+        let mut sum_r = 0.0_f64;
+        let mut count_l = 0.0_f64;
+        let mut count_r = 0.0_f64;
+        for (c, plane) in planes.iter().enumerate() {
+          let value = f64::from(plane[frame]);
+          if c % 2 == 0 {
+            sum_l += value;
+            count_l += 1.0;
+          } else {
+            sum_r += value;
+            count_r += 1.0;
           }
-          *l = (sum_l / count_l) as f32;
-          *r = (sum_r / count_r) as f32;
         }
-        (left, right)
+        *l = (sum_l / count_l) as f32;
+        *r = (sum_r / count_r) as f32;
       }
+      (left, right)
     }
   }
+}
 
-  /// Interleave two equal-length sample slices into LE `f32` bytes.
-  pub(super) fn interleave(left: &[f32], right: &[f32]) -> Vec<u8> {
-    let count = left.len().min(right.len());
-    let mut out = Vec::with_capacity(count * 8);
-    for (l, r) in left.iter().zip(right).take(count) {
-      out.extend_from_slice(&l.to_le_bytes());
-      out.extend_from_slice(&r.to_le_bytes());
-    }
-    out
+/// Interleave two equal-length sample slices into LE `f32` bytes.
+fn interleave(left: &[f32], right: &[f32]) -> Vec<u8> {
+  let count = left.len().min(right.len());
+  let mut out = Vec::with_capacity(count * 8);
+  for (l, r) in left.iter().zip(right).take(count) {
+    out.extend_from_slice(&l.to_le_bytes());
+    out.extend_from_slice(&r.to_le_bytes());
   }
+  out
 }
 
 #[cfg(target_os = "macos")]
 pub use macos::PlatformAudioCapture;
 
-/// System-audio capture on platforms without a `ScreenCaptureKit` backend.
-#[cfg(not(target_os = "macos"))]
+/// WASAPI loopback backend for Windows system-audio capture.
+#[cfg(target_os = "windows")]
+#[expect(
+  unsafe_code,
+  reason = "WASAPI is a COM API: every interface call is an unsafe vtable \
+            dispatch, and capture buffers arrive as raw pointers"
+)]
+#[path = "wasapi.rs"]
+mod wasapi;
+
+#[cfg(target_os = "windows")]
+pub use wasapi::PlatformAudioCapture;
+
+/// System-audio capture on platforms without a native backend.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub struct PlatformAudioCapture;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 impl PlatformAudioCapture {
   /// Always fails with [`CaptureError::AudioNotSupported`].
   ///
@@ -449,7 +465,7 @@ impl PlatformAudioCapture {
   }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 impl AudioCaptureSource for PlatformAudioCapture {
   fn next_audio(&mut self) -> Result<Option<RawAudioFrame>, CaptureError> {
     Err(CaptureError::AudioNotSupported)
@@ -498,13 +514,11 @@ impl AudioCaptureSource for FakeAudioCapture {
 
 #[cfg(test)]
 mod tests {
-  #[cfg(target_os = "macos")]
-  use super::macos::*;
   use super::*;
 
-  /// On platforms without a system-audio backend (Windows today), the
-  /// video-only fallback in `lumen serve` depends on this exact error.
-  #[cfg(not(target_os = "macos"))]
+  /// On platforms without a system-audio backend, the video-only fallback
+  /// in `lumen serve` depends on this exact error.
+  #[cfg(not(any(target_os = "macos", target_os = "windows")))]
   #[test]
   fn unsupported_platform_reports_audio_not_supported() {
     let err = PlatformAudioCapture::new()
@@ -531,7 +545,7 @@ mod tests {
     assert_eq!(&pair[..4], &pair[4..]);
   }
 
-  #[cfg(target_os = "macos")]
+  #[cfg(any(target_os = "macos", target_os = "windows"))]
   #[test]
   fn deinterleave_splits_channels() {
     let interleaved: Vec<u8> = [1.0_f32, -1.0, 2.0, -2.0]
@@ -544,7 +558,7 @@ mod tests {
     assert!(deinterleave(&[0; 6], 2).is_none());
   }
 
-  #[cfg(target_os = "macos")]
+  #[cfg(any(target_os = "macos", target_os = "windows"))]
   #[test]
   fn downmix_averages_surround_into_stereo() {
     let planes: Vec<Vec<f32>> = [[1.0_f32, 1.0], [0.0, 0.0], [1.0, 1.0], [0.0, 0.0]]
@@ -556,7 +570,7 @@ mod tests {
     assert_eq!(right, [0.0, 0.0]);
   }
 
-  #[cfg(target_os = "macos")]
+  #[cfg(any(target_os = "macos", target_os = "windows"))]
   #[test]
   fn interleave_roundtrips_deinterleave() {
     let interleaved: Vec<u8> = [3.0_f32, 4.0, 5.0, 6.0]

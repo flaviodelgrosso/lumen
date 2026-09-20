@@ -20,8 +20,6 @@ screencapturekit.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-capture.workspace = true
-
-[target.'cfg(target_os = "windows")'.dev-dependencies]
 windows.workspace = true
 
 [lints]
