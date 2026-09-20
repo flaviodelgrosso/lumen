@@ -1648,7 +1648,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "lumen-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1668,7 +1668,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "serde",
@@ -1677,7 +1677,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-media"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "core-graphics",
@@ -1693,7 +1693,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1719,7 +1719,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-webrtc"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "bytes",
