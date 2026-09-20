@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 use std::net::IpAddr;
 
 use clap::{Parser, Subcommand};
-use lumen_core::{Quality, StreamConfig};
+use lumen_core::{EncoderPreference, Quality, StreamConfig};
 use lumen_media::capture::{list_displays, list_windows};
 
 #[derive(Parser)]
@@ -61,6 +61,10 @@ struct ServeArgs {
   #[arg(long, value_name = "fps")]
   fps: Option<u32>,
 
+  /// Video encoder backend: auto | software | hardware (default: auto)
+  #[arg(long, value_name = "backend")]
+  encoder: Option<String>,
+
   /// Encoding quality preset: low | medium | high | auto (default: auto)
   #[arg(long, value_name = "preset")]
   quality: Option<String>,
@@ -98,6 +102,7 @@ fn main() -> anyhow::Result<()> {
     bind: None,
     port: None,
     fps: None,
+    encoder: None,
     quality: None,
     max_bitrate: None,
     auto_accept: false,
@@ -148,6 +153,11 @@ fn stream_config(args: &ServeArgs) -> anyhow::Result<StreamConfig> {
   }
   if let Some(f) = args.fps {
     cfg.fps = f;
+  }
+  if let Some(e) = &args.encoder {
+    cfg.encoder = e
+      .parse::<EncoderPreference>()
+      .map_err(|e: lumen_core::ConfigError| anyhow::anyhow!("{e}"))?;
   }
   cfg.audio = !args.no_audio;
   cfg.validate().map_err(|e| anyhow::anyhow!("{e}"))?;

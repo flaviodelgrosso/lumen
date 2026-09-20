@@ -115,6 +115,8 @@ pub struct StreamInfo {
   pub quality: String,
   /// Effective encoder bitrate, human-readable (`8.0M` style).
   pub bitrate_label: String,
+  /// Selected encoder backend (`openh264`, `videotoolbox`).
+  pub encoder_label: String,
   /// Audio description (`Opus 128k stereo`, `off`, `unavailable`).
   pub audio_label: String,
   /// Canonical viewer URL (stable `lumen.local` hostname when mDNS
@@ -522,6 +524,7 @@ async fn admin_state(
     },
     "quality": state.stream.quality,
     "bitrate": state.stream.bitrate_label,
+    "encoder": state.stream.encoder_label,
     "audio": state.stream.audio_label,
     "viewerUrl": state.stream.viewer_url,
     "pending": pending,

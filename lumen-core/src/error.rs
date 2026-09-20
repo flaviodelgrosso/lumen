@@ -17,6 +17,12 @@ pub enum ConfigError {
     /// The offending raw value.
     value: String,
   },
+  /// An encoder preference was not one of `auto|software|hardware`.
+  #[error("invalid encoder {value:?}: expected one of auto, software, hardware")]
+  InvalidEncoder {
+    /// The offending raw value.
+    value: String,
+  },
   /// A frame rate was out of the supported range.
   #[error("invalid fps {value}: expected 1..=240")]
   InvalidFps {

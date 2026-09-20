@@ -20,7 +20,7 @@ use lumen_media::capture::{
   AudioCaptureSource, CaptureError, CaptureSource, PlatformAudioCapture, PlatformCapture,
   list_displays,
 };
-use lumen_media::encoder::{AudioEncoder, OpenH264Encoder, OpusAudioEncoder};
+use lumen_media::encoder::{AudioEncoder, OpusAudioEncoder, create_video_encoder};
 use lumen_server::{
   ApprovalQueue, AuthDecision, Authorizer, PairingCode, PeerRegistry, ServerConfig, ServerHandle,
   SessionToken, StreamInfo, describe_user_agent, spawn_server,
@@ -73,7 +73,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .fps
     .saturating_mul(u32::try_from(cfg.keyframe_interval_secs).unwrap_or(1))
     .max(1);
-  let encoder = OpenH264Encoder::new(dims, cfg.fps, bitrate, keyframe_frames)?;
+  let setup = create_video_encoder(cfg.encoder, dims, cfg.fps, bitrate, keyframe_frames)?;
+  tracing::info!("video encoder backend: {}", setup.backend);
 
   // ── network ──
   let interfaces = crate::network::discover()?;
@@ -108,7 +109,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
   let pipeline = pipeline::start(
     source,
-    Box::new(encoder),
+    setup.encoder,
     cfg.fps,
     cfg.keyframe_interval_secs,
     shutdown.clone(),
@@ -120,7 +121,14 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
   let mdns = advertise_mdns(port, iface.ip);
   let viewer_url = crate::mdns::viewer_url(mdns.is_some(), iface.ip, port);
-  let stream = build_stream_info(&args, &cfg, dims, &viewer_url, pipeline.audio.is_some());
+  let stream = build_stream_info(
+    &args,
+    &cfg,
+    dims,
+    &viewer_url,
+    pipeline.audio.is_some(),
+    setup.backend,
+  );
 
   let server = spawn_server(ServerConfig {
     port,
@@ -308,6 +316,7 @@ fn build_stream_info(
   dims: lumen_core::Dimensions,
   viewer_url: &str,
   audio_enabled: bool,
+  encoder_backend: &str,
 ) -> StreamInfo {
   StreamInfo {
     source_label: source_label(args, dims),
@@ -316,6 +325,7 @@ fn build_stream_info(
     target_fps: cfg.fps,
     quality: cfg.quality.to_string(),
     bitrate_label: cfg.effective_bitrate(dims).to_string(),
+    encoder_label: encoder_backend.to_owned(),
     audio_label: audio_label(cfg, audio_enabled),
     viewer_url: viewer_url.to_owned(),
   }
@@ -339,6 +349,7 @@ fn print_banner(
     stream.quality, stream.target_fps, stream.bitrate_label
   );
   println!("Audio:        {}", stream.audio_label);
+  println!("Encoder:      {}", stream.encoder_label);
   println!("Listening on: {}:{}", iface.ip, port);
   println!();
   println!("Open on any device:");

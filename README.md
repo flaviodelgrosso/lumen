@@ -110,6 +110,7 @@ lumen windows          # list capturable windows
 | `--bind <ip>`          | auto    | LAN address to bind (interactive menu when several interfaces exist) |
 | `--port <port>`        | `3131`  | HTTP/signaling port                                                  |
 | `--fps <fps>`          | `60`    | Capture/encode frame rate                                            |
+| `--encoder <backend>`  | `auto`  | `auto` \| `software` \| `hardware` — see [Encode](#encode)           |
 | `--quality <preset>`   | `auto`  | `low` \| `medium` \| `high` \| `auto`                                |
 | `--max-bitrate <rate>` | preset  | Ceiling, e.g. `8000k` or `2M`                                        |
 | `--auto-accept`        | off     | Admit viewers that enter the current pairing code                     |
@@ -134,7 +135,7 @@ Native backends grab BGRA frames — `ScreenCaptureKit` via the `screencaptureki
 
 ### Encode
 
-`openh264` (Cisco's royalty-free binary codec, loaded at runtime) encodes H.264 constrained-baseline-ish Annex B, with a forced IDR every 2 seconds and on every new viewer join — mid-GOP joiners start instantly.
+The `auto` default prefers the platform's hardware H.264 encoder: on macOS, VideoToolbox (via safe `objc2` bindings) with hardware acceleration, real-time rate control and no frame reordering, reported as `videotoolbox`. Where no hardware encoder exists — or with `--encoder software` — the bundled `openh264` (Cisco's royalty-free binary codec, loaded at runtime) encodes instead, reported as `openh264`; `auto` falls back with a warning, while `--encoder hardware` requires VideoToolbox and fails startup instead of falling back silently. Both backends emit H.264 Annex B with a forced IDR every 2 seconds and on every new viewer join — mid-GOP joiners start instantly — and every IDR is self-contained (SPS + PPS + IDR). The selected backend is shown in the startup banner and the host dashboard.
 
 ### Audio
 
@@ -269,7 +270,7 @@ A capture larger than 3840×2160 that Windows Graphics Capture cannot scale (see
 
 ```
 lumen-core      shared types, config, errors
-lumen-media     native video (SCK / WGC) + system-audio (SCK / WASAPI) + openh264/opus wrappers + fake sources/encoders (tests)
+lumen-media     native video (SCK / WGC) + system-audio (SCK / WASAPI) + openh264/videotoolbox/opus wrappers + fake sources/encoders (tests)
 lumen-webrtc    per-viewer peer connection (video + audio tracks)
 lumen-server    axum HTTP + WebSocket signaling + fan-out + token/approval/user-agent parsing + embedded viewer
 lumen-cli       `lumen` binary (serve/displays/windows), LAN interface discovery

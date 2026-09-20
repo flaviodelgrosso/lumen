@@ -46,6 +46,24 @@ screencapturekit = "10"
 # Only for the TCC screen-recording permission gate (preflight/request); the
 # `screencapturekit` crate itself has no permission helper.
 core-graphics = "0.25"
+# macOS hardware H.264: safe VideoToolbox bindings (objc2 framework crates).
+# `objc2-video-toolbox` gates its session API behind the CoreMedia/CoreVideo
+# feature bridges; CoreFoundation supplies CFDictionary/CFNumber/CFBoolean.
+objc2-core-foundation = "0.3"
+objc2-core-media = { version = "0.3", features = [
+  "CMBlockBuffer",
+  "CMFormatDescription",
+  "CMSampleBuffer",
+  "CMTime",
+] }
+objc2-core-video = { version = "0.3", features = ["CVBuffer", "CVPixelBuffer"] }
+objc2-video-toolbox = { version = "0.3", features = [
+  "VTCompressionSession",
+  "VTErrors",
+  "VTSession",
+  "objc2-core-media",
+  "objc2-core-video",
+] }
 # Windows video: direct Windows.Graphics.Capture bindings (engine runs on its
 # own thread, frames delivered over a bounded channel).
 windows-capture = "2"

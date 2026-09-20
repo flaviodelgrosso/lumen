@@ -121,6 +121,45 @@ impl std::fmt::Display for Quality {
   }
 }
 
+/// Video encoder backend preference (`--encoder`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EncoderPreference {
+  /// Prefer the platform-native hardware encoder; fall back to `OpenH264`.
+  #[default]
+  Auto,
+  /// Always use the bundled `OpenH264` software encoder.
+  Software,
+  /// Require a platform-native hardware encoder; never fall back.
+  Hardware,
+}
+
+impl FromStr for EncoderPreference {
+  type Err = ConfigError;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    match s.trim().to_ascii_lowercase().as_str() {
+      "auto" => Ok(Self::Auto),
+      "software" => Ok(Self::Software),
+      "hardware" => Ok(Self::Hardware),
+      _ => Err(ConfigError::InvalidEncoder {
+        value: s.to_owned(),
+      }),
+    }
+  }
+}
+
+impl std::fmt::Display for EncoderPreference {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let name = match self {
+      Self::Auto => "auto",
+      Self::Software => "software",
+      Self::Hardware => "hardware",
+    };
+    f.write_str(name)
+  }
+}
+
 /// Fully resolved streaming configuration for one `serve` run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamConfig {
@@ -136,6 +175,8 @@ pub struct StreamConfig {
   pub audio: bool,
   /// Target Opus audio bitrate.
   pub audio_bitrate: Bitrate,
+  /// Video encoder backend preference.
+  pub encoder: EncoderPreference,
 }
 
 impl Default for StreamConfig {
@@ -147,6 +188,7 @@ impl Default for StreamConfig {
       keyframe_interval_secs: 2,
       audio: true,
       audio_bitrate: Bitrate(128_000),
+      encoder: EncoderPreference::default(),
     }
   }
 }
@@ -278,5 +320,38 @@ mod tests {
       .validate()
       .is_ok()
     );
+  }
+
+  #[test]
+  fn parses_encoder_preferences() {
+    assert_eq!(
+      "auto".parse::<EncoderPreference>().unwrap(),
+      EncoderPreference::Auto
+    );
+    assert_eq!(
+      "Software".parse::<EncoderPreference>().unwrap(),
+      EncoderPreference::Software
+    );
+    assert_eq!(
+      "HARDWARE".parse::<EncoderPreference>().unwrap(),
+      EncoderPreference::Hardware
+    );
+    assert!("gpu".parse::<EncoderPreference>().is_err());
+  }
+
+  #[test]
+  fn encoder_preference_display_rounds() {
+    for pref in [
+      EncoderPreference::Auto,
+      EncoderPreference::Software,
+      EncoderPreference::Hardware,
+    ] {
+      assert_eq!(pref.to_string().parse::<EncoderPreference>().unwrap(), pref);
+    }
+  }
+
+  #[test]
+  fn stream_config_defaults_to_auto_encoder() {
+    assert_eq!(StreamConfig::default().encoder, EncoderPreference::Auto);
   }
 }

@@ -54,6 +54,7 @@
   const sFps = $("s-fps");
   const sQuality = $("s-quality");
   const sBitrate = $("s-bitrate");
+  const sEncoder = $("s-encoder");
   const sAudio = $("s-audio");
   const qr = $("qr");
   const urlInput = $("viewer-url");
@@ -105,6 +106,7 @@
         : `${t("fpsPending")} (${fps.target ?? "—"})`;
     sQuality.textContent = state.quality || "—";
     sBitrate.textContent = state.bitrate || "—";
+    sEncoder.textContent = state.encoder || "—";
     sAudio.textContent = state.audio || "—";
     urlInput.value = state.viewerUrl || "";
 

@@ -110,6 +110,7 @@ async fn start_with_pairing(approve: bool, pairing: Option<PairingCode>) -> Test
       target_fps: 30,
       quality: "auto".to_owned(),
       bitrate_label: "8M".to_owned(),
+      encoder_label: "fake".to_owned(),
       audio_label: "off".to_owned(),
       viewer_url: "http://lumen.local:0".to_owned(),
     },
@@ -676,6 +677,11 @@ async fn admin_page_and_state_require_admin_token() {
   assert_eq!(json["source"]["label"], "Test Display");
   assert_eq!(json["source"]["width"], 1920);
   assert_eq!(json["fps"]["target"], 30);
+  assert_eq!(
+    json["encoder"].as_str(),
+    Some("fake"),
+    "the selected encoder backend must be reported to the dashboard"
+  );
   assert_eq!(
     json["viewerUrl"].as_str(),
     Some("http://lumen.local:0"),
