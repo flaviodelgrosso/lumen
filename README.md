@@ -3,7 +3,7 @@
 
 # 📽️ Lumen
 
-**Stream your screen — with system audio on macOS — to any browser on your LAN.**
+**Stream your screen — with system audio on macOS and Windows — to any browser on your LAN.**
 
 [![CI](https://img.shields.io/github/actions/workflow/status/flaviodelgrosso/lumen/ci.yml?style=flat-square&label=CI)](https://github.com/flaviodelgrosso/lumen/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/rust-1.85%2B-dea584?style=flat-square&logo=rust&logoColor=black)
@@ -19,19 +19,19 @@
 No viewer app. No FFmpeg. No account. Run one command, scan a QR code, watch and listen — approvals, device management and stream stats live in a built-in host dashboard.
 
 ```
-capture (SCK / WGC)  →  openh264 (H.264) ┐
-                                         ├→ WebRTC over SRTP → browser <video>
-system audio (SCK)   →  libopus  (Opus)  ┘
+capture (SCK / WGC)       →  openh264 (H.264) ┐
+                                               ├→ WebRTC over SRTP → browser <video>
+system audio (SCK / WASAPI)   →  libopus  (Opus)  ┘
 ```
 
-Works on **macOS 13+** (ScreenCaptureKit, video + system audio) and **Windows 10 1903+ / 11** (Windows.Graphics.Capture, video only — see [Windows](#windows)).
+Works on **macOS 13+** (ScreenCaptureKit, video + system audio) and **Windows 10 1903+ / 11** (Windows.Graphics.Capture + WASAPI loopback audio — see [Windows](#windows)).
 
 ## Features
 
 - **Zero-setup viewer** — any modern browser on the LAN; nothing to install on the viewing device
 - **Stable entry URL** — `http://lumen.local:3131`, advertised via mDNS/Bonjour; no secrets in the URL, LAN IP fallback printed alongside
 - **Native capture** — ScreenCaptureKit on macOS, Windows.Graphics.Capture on Windows, no FFmpeg
-- **System audio on macOS** — dedicated ScreenCaptureKit audio stream, Opus 48 kHz stereo
+- **System audio on macOS & Windows** — dedicated ScreenCaptureKit stream or WASAPI loopback of the default output device, Opus 48 kHz stereo
 - **Instant mid-session joins** — forced keyframe every 2 s and on every new viewer
 - **Host dashboard** — a lightweight `/admin` page (no frameworks): QR code, copy-link, live FPS/quality/audio, pending devices with Allow/Deny, connected devices with Disconnect
 - **Two approval surfaces** — confirm each viewer in the terminal (browser + device detected) or from the dashboard; kick anyone at any time from either
@@ -45,7 +45,7 @@ Works on **macOS 13+** (ScreenCaptureKit, video + system audio) and **Windows 10
 | Requirement                     | Notes                                                                                               |
 | ------------------------------- | --------------------------------------------------------------------------------------------------- |
 | **macOS 13+**                   | Apple Silicon or Intel. Capture via ScreenCaptureKit; system audio via a dedicated audio stream.    |
-| **Windows 10 1903+ / 11**       | x64. Display and window capture via Windows.Graphics.Capture. Video only — see [Windows](#windows). |
+| **Windows 10 1903+ / 11**       | x64. Display and window capture via Windows.Graphics.Capture; system audio via WASAPI loopback — see [Windows](#windows). |
 | **Rust 1.85+**                  | Edition 2024. Needed to build.                                                                      |
 | **CMake**                       | The `opus` crate compiles a bundled `libopus` at build time (`brew install cmake`).                 |
 | **Screen Recording permission** | macOS only — see below.                                                                             |
@@ -75,10 +75,10 @@ Windows needs **no per-app screen-recording permission** — Windows.Graphics.Ca
 
 - **Elevated windows** — a non-elevated `lumen` cannot capture windows running as administrator. Close the elevated target or run `lumen` from an elevated terminal.
 - **Firewall / group policy** — allow `lumen` through Windows Defender Firewall on the current (Private) network profile; enterprise policy can disable screen capture entirely.
-- **No system audio** — WGC captures video only. `lumen serve` detects the missing backend, logs `system audio is not available here; streaming video only`, and starts normally. `--no-audio` is never required on Windows.
+- **System audio** — `lumen serve` captures the default output device through WASAPI loopback. With no default output device (or no audio service) it logs `audio capture unavailable (…); streaming video only` and starts normally. Changing the default output or unplugging the captured device mid-session stops audio with a logged error; restart `lumen serve` to capture the new device. `--no-audio` is never required on Windows.
 
 > [!NOTE]
-> The Windows build is fully gated in CI (`check`/`test`/`clippy`/`build` on `windows-latest`), but CI cannot exercise screen capture. The WGC path drives `windows-capture` directly but **not yet validated on hardware** — run the checklist below on a real machine before trusting it.
+> The Windows build is fully gated in CI (`check`/`test`/`clippy`/`build` on `windows-latest`), but CI cannot exercise screen capture or audio hardware. The WGC path drives `windows-capture` directly and the WASAPI path the `windows` crate, both **not yet validated on hardware** — run the checklist below on a real machine before trusting them.
 
 <details>
 <summary><b>Windows hardware verification checklist</b></summary>
@@ -87,11 +87,11 @@ Windows needs **no per-app screen-recording permission** — Windows.Graphics.Ca
 2. `lumen serve` captures primary and non-primary displays at 100%, 125% and 150% scaling (WGC sizes frames by effective DPI; padded rows are repacked by the encoder).
 3. On a display larger than **3840×2160** (5K/6K/8K), `lumen serve` exits at startup with `display <W>x<H> exceeds the 3840x2160 encoder limit…`. The WGC backend cannot scale — this is expected, not a bug.
 4. Window capture of a normal (non-elevated) window, including a window on a secondary monitor with different DPI.
-5. The banner shows `Audio: unavailable — video only`, and viewers play video with no audio track.
+5. The banner shows the Opus audio line, and a viewer on another device hears system audio after pressing Unmute (browser autoplay policy). Switching the default output device mid-session logs an audio error and stops the audio track while video keeps streaming; restarting `lumen serve` captures the new device.
 6. A Chromium viewer on another device connects over mDNS (accept the firewall prompt on the **Private** profile first).
 7. Ctrl+C shuts the server down cleanly.
 
-If an item fails, the fix belongs in the platform-gated capture code in `lumen-media` or upstream in `windows-capture`; the macOS path is unaffected either way.
+If an item fails, the fix belongs in the platform-gated capture code in `lumen-media` (WGC in `capture/windows.rs`, WASAPI loopback in `capture/wasapi.rs`) or upstream in `windows-capture`; the macOS path is unaffected either way.
 
 </details>
 
@@ -138,7 +138,7 @@ Native backends grab BGRA frames — `ScreenCaptureKit` via the `screencaptureki
 
 ### Audio
 
-A dedicated audio-only ScreenCaptureKit stream captures system audio on macOS and normalizes it to 48 kHz stereo `f32` PCM for Opus. `libopus` (bundled via the `opus` crate) encodes 20 ms packets at 128 kbps, riding a second WebRTC track in the same `MediaStream`. Browsers block autoplaying sound, so the viewer starts **muted** — use the Unmute button in the HUD to enable sound. On Windows there is no system-audio backend; `lumen` falls back to a video-only `MediaStream` automatically.
+System audio is captured natively and normalized to 48 kHz stereo `f32` PCM for Opus: a dedicated audio-only ScreenCaptureKit stream on macOS, WASAPI loopback of the default render endpoint on Windows (device rate and channel count — commonly 44.1 kHz or surround — are downmixed and band-limited resampled to the Opus format). `libopus` (bundled via the `opus` crate) encodes 20 ms packets at 128 kbps, riding a second WebRTC track in the same `MediaStream`. Browsers block autoplaying sound, so the viewer starts **muted** — use the Unmute button in the HUD to enable sound. When no capturable output device exists, `lumen` falls back to a video-only `MediaStream` automatically.
 
 ### Stream
 
@@ -156,7 +156,7 @@ One `webrtc-rs` peer connection per viewer (negotiated `recvonly` answer from th
 - Traffic is **LAN-only**: ICE is restricted to LAN addresses, mDNS `.local` candidates are resolved in query mode, and a loopback socket is bound only for a viewer that is itself on loopback. The HTTP server is plain `http://` (no TLS certificate warnings), but the media itself — video and audio — is SRTP-encrypted end to end. Do not expose the port beyond your LAN.
 
 > [!WARNING]
-> **Audio is everything your computer plays** (macOS) — approved viewers hear notifications, calls and music. Use `--no-audio` for video-only; Windows is video-only already.
+> **Audio is everything your computer plays** (macOS and Windows) — approved viewers hear notifications, calls and music. Use `--no-audio` for video-only.
 
 ## Troubleshooting
 
@@ -269,7 +269,7 @@ A capture larger than 3840×2160 that Windows Graphics Capture cannot scale (see
 
 ```
 lumen-core      shared types, config, errors
-lumen-media     native video (SCK / WGC) + SCK system-audio + openh264/opus wrappers + fake sources/encoders (tests)
+lumen-media     native video (SCK / WGC) + system-audio (SCK / WASAPI) + openh264/opus wrappers + fake sources/encoders (tests)
 lumen-webrtc    per-viewer peer connection (video + audio tracks)
 lumen-server    axum HTTP + WebSocket signaling + fan-out + token/approval/user-agent parsing + embedded viewer
 lumen-cli       `lumen` binary (serve/displays/windows), LAN interface discovery

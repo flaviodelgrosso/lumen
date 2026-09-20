@@ -22,9 +22,10 @@ use lumen_core::{Dimensions, PixelFormat, RawFrame};
 use thiserror::Error;
 
 pub mod audio;
-/// Windowed-sinc resampler used only by the macOS audio path (SCK delivers
-/// arbitrary device rates); other platforms have no system-audio backend.
-#[cfg(target_os = "macos")]
+/// Windowed-sinc resampler used by the native system-audio paths (SCK and
+/// WASAPI both deliver arbitrary device rates); other platforms have no
+/// system-audio backend.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod resample;
 
 #[cfg(target_os = "macos")]
@@ -65,7 +66,7 @@ const PERMISSION_HINT: &str =
 #[cfg(target_os = "macos")]
 const AUDIO_UNSUPPORTED_NOTE: &str = " (macOS 13+ required)";
 #[cfg(target_os = "windows")]
-const AUDIO_UNSUPPORTED_NOTE: &str = " (system audio capture is not implemented on Windows)";
+const AUDIO_UNSUPPORTED_NOTE: &str = " (Windows audio endpoint subsystem unavailable)";
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const AUDIO_UNSUPPORTED_NOTE: &str = "";
 
@@ -102,6 +103,12 @@ pub enum CaptureError {
   /// The audio capture engine failed to start.
   #[error("audio capture failed to start: {0}")]
   AudioStart(String),
+  /// The audio endpoint being captured was removed or became invalid
+  /// (device unplugged, default output switched).
+  #[error(
+    "the captured audio device was removed or became invalid; set the intended default output before starting `lumen serve`"
+  )]
+  AudioDeviceLost,
   /// The capture engine refused to start (e.g. the target vanished or the
   /// OS rejected the stream configuration).
   #[error("capture failed to start: {0}")]
