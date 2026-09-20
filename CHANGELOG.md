@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/flaviodelgrosso/lumen/compare/v0.1.2...v0.1.3) - 2026-09-20
+
+### Added
+
+- *(media)* hardware H.264 encoding via VideoToolbox with encoder selection
+
+### Fixed
+
+- gate AVCC helpers outside production targets
+
 ## [0.1.2](https://github.com/flaviodelgrosso/lumen/compare/v0.1.1...v0.1.2) - 2026-09-20
 
 ### Added
