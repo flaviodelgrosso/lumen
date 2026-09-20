@@ -32,6 +32,7 @@ version_group = "lumen"
 # This is the package responsible for the single Lumen tag/release.
 git_tag_enable = true
 git_release_enable = true
+git_release_name = "v{{ version }}"
 
 # Maintain one changelog at the repository root.
 changelog_update = true
