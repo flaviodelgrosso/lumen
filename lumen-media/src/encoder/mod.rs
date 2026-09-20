@@ -21,6 +21,7 @@ use lumen_core::{Bitrate, Dimensions, EncodedFrame, EncoderPreference, RawFrame}
 use thiserror::Error;
 
 pub mod audio;
+#[cfg(any(target_os = "macos", test))]
 mod avcc;
 mod openh264;
 
