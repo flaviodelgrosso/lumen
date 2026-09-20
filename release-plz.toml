@@ -1,18 +1,67 @@
 [workspace]
+# Lumen is released from git tags only; nothing is published to crates.io.
 git_only = true
-release = false
+
+# Process changes from every crate in the workspace.
+release = true
 release_always = false
+
+# All crates use the same release tag as their version source.
+git_tag_name = "v{{ version }}"
+
+# Only lumen-cli will actually create the tag and GitHub release.
+git_tag_enable = false
+git_release_enable = false
+
+# Keep a single root changelog instead of one changelog per crate.
+changelog_update = false
+
+# These are internal crates; version bumps are driven by commits rather than
+# public-library API compatibility checks.
+semver_check = false
+
+
+# ---------------------------------------------------------------------------
+# Main Lumen application
+# ---------------------------------------------------------------------------
 
 [[package]]
 name = "lumen-cli"
-release = true
-changelog_path = "./CHANGELOG.md"
-git_tag_name = "v{{ version }}"
+version_group = "lumen"
+
+# This is the package responsible for the single Lumen tag/release.
+git_tag_enable = true
 git_release_enable = true
 
+# Maintain one changelog at the repository root.
+changelog_update = true
+changelog_path = "./CHANGELOG.md"
+
+# Include changes from all internal crates in the Lumen changelog.
 changelog_include = [
   "lumen-core",
   "lumen-media",
   "lumen-server",
   "lumen-webrtc",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Internal crates
+# ---------------------------------------------------------------------------
+
+[[package]]
+name = "lumen-core"
+version_group = "lumen"
+
+[[package]]
+name = "lumen-media"
+version_group = "lumen"
+
+[[package]]
+name = "lumen-server"
+version_group = "lumen"
+
+[[package]]
+name = "lumen-webrtc"
+version_group = "lumen"
