@@ -778,7 +778,7 @@ mod tests {
       let samples = frame_lanes(&frame.samples);
       assert!(samples.iter().all(|s| s.is_finite()), "NaN in resampled");
       peak = samples.iter().fold(peak, |m, s| m.max(s.abs()));
-      total += samples.len();
+      total += samples.len() / 2;
     }
     // 2048 input frames scale to ~2229 output frames; the streaming
     // filter holds ~32 input samples of history, so allow a small band.
