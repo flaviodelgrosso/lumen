@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/flaviodelgrosso/lumen/compare/v0.1.1...v0.1.2) - 2026-09-20
+
+### Added
+
+- *(media)* capture Windows system audio via WASAPI loopback ([#19](https://github.com/flaviodelgrosso/lumen/pull/19))
+
 ## [0.1.1](https://github.com/flaviodelgrosso/lumen/compare/v0.1.0...v0.1.1) - 2026-09-19
 
 ### Fixed
