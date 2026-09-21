@@ -1,19 +1,28 @@
 [workspace]
-# Lumen is released from git tags only; nothing is published to crates.io.
+# Lumen is distributed from git tags only; nothing is published to crates.io.
 git_only = true
+publish = false
 
-# Process changes from every crate in the workspace.
+# Process every crate in the workspace.
 release = true
 release_always = false
 
-# All crates use the same release tag as their version source.
-git_tag_name = "v{{ version }}"
+# Every workspace crate gets its own internal release baseline.
+# Example:
+#   lumen-core-v0.1.8
+#   lumen-media-v0.1.8
+#   lumen-session-v0.1.8
+#
+# This makes adding/removing workspace crates safe: a new crate simply starts
+# with its first package-specific tag instead of trying to resolve an older
+# global vX.Y.Z tag where it did not exist yet.
+git_tag_name = "{{ package }}-v{{ version }}"
+git_tag_enable = true
 
-# Only lumen-cli will actually create the tag and GitHub release.
-git_tag_enable = false
+# Internal crate tags must not create GitHub Releases.
 git_release_enable = false
 
-# Keep a single root changelog instead of one changelog per crate.
+# Keep a single root changelog owned by lumen-cli.
 changelog_update = false
 
 # These are internal crates; version bumps are driven by commits rather than
@@ -22,15 +31,20 @@ semver_check = false
 
 
 # ---------------------------------------------------------------------------
-# Main Lumen application
+# Public Lumen release
 # ---------------------------------------------------------------------------
 
 [[package]]
 name = "lumen-cli"
-version_group = "lumen"
 
-# This is the package responsible for the single Lumen tag/release.
+# lumen-cli owns the public tag and GitHub Release:
+#
+#   v0.1.8
+#
+# while the other crates use package-specific baseline tags.
+git_tag_name = "v{{ version }}"
 git_tag_enable = true
+
 git_release_enable = true
 git_release_name = "v{{ version }}"
 
@@ -38,7 +52,11 @@ git_release_name = "v{{ version }}"
 changelog_update = true
 changelog_path = "./CHANGELOG.md"
 
-# Include changes from all internal crates in the Lumen changelog.
+# Include changes from internal crates in the public Lumen changelog.
+#
+# This list is only for changelog aggregation. Forgetting to add a future
+# crate here will not break versioning or releases; its commits just won't
+# appear automatically in lumen-cli's changelog until it is added.
 changelog_include = [
   "lumen-core",
   "lumen-media",
@@ -47,34 +65,3 @@ changelog_include = [
   "lumen-webrtc",
   "lumen-desktop",
 ]
-
-
-# ---------------------------------------------------------------------------
-# Internal crates
-# ---------------------------------------------------------------------------
-
-[[package]]
-name = "lumen-core"
-version_group = "lumen"
-
-[[package]]
-name = "lumen-media"
-version_group = "lumen"
-
-[[package]]
-name = "lumen-server"
-version_group = "lumen"
-
-[[package]]
-name = "lumen-webrtc"
-version_group = "lumen"
-
-[[package]]
-name = "lumen-session"
-release = false
-git_only = false
-
-[[package]]
-name = "lumen-desktop"
-release = false
-git_only = false
