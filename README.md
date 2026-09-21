@@ -50,7 +50,14 @@ System audio ─────► Opus ───┘
 | Build tools | Rust 1.85+ and CMake (source builds only)  |
 | Viewer      | A modern browser on the same local network |
 
-Download the archive for your platform from [GitHub Releases](https://github.com/flaviodelgrosso/lumen/releases) — no Rust, Cargo or CMake required:
+On Apple Silicon Macs, install with Homebrew:
+
+```bash
+brew tap flaviodelgrosso/formulae
+brew install lumen
+```
+
+Or download the archive for your platform from [GitHub Releases](https://github.com/flaviodelgrosso/lumen/releases) — no Rust, Cargo or CMake required:
 
 | Platform            | Asset                                      |
 | ------------------- | ------------------------------------------ |
