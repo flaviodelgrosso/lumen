@@ -308,10 +308,10 @@ impl Drop for PlatformCapture {
     // Request WM_QUIT and join the engine thread. The frame pump — the sole
     // holder of the frame sender — dies with the thread, so the consumer's
     // `recv` wakes with `Disconnected` (`CaptureError::Stopped`).
-    if let Some(control) = self.control.take() {
-      if let Err(error) = control.stop() {
-        tracing::debug!(error = %error, "failed to stop Windows capture engine");
-      }
+    if let Some(control) = self.control.take()
+      && let Err(error) = control.stop()
+    {
+      tracing::debug!(error = %error, "failed to stop Windows capture engine");
     }
   }
 }
