@@ -135,6 +135,7 @@ jobs:
           bin="target/${{ matrix.target }}/release/${{ matrix.binary }}"
           "$bin" --version
           "$bin" --help
+          "$bin" desktop --help
           # The packaged executable must match the GitHub Release version exactly.
           actual=$("$bin" --version)
           expected="lumen ${VERSION}"

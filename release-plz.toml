@@ -42,8 +42,10 @@ changelog_path = "./CHANGELOG.md"
 changelog_include = [
   "lumen-core",
   "lumen-media",
+  "lumen-session",
   "lumen-server",
   "lumen-webrtc",
+  "lumen-desktop",
 ]
 
 
@@ -65,4 +67,12 @@ version_group = "lumen"
 
 [[package]]
 name = "lumen-webrtc"
+version_group = "lumen"
+
+[[package]]
+name = "lumen-session"
+version_group = "lumen"
+
+[[package]]
+name = "lumen-desktop"
 version_group = "lumen"

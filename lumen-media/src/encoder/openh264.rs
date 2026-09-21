@@ -185,10 +185,10 @@ fn extract_param_sets(stream: &openh264::encoder::EncodedBitStream<'_>) -> Bytes
       let Some(nal) = layer.nal_unit(n) else {
         continue;
       };
-      if let Some(t) = nal_type(nal) {
-        if t == 7 || t == 8 {
-          out.extend_from_slice(nal);
-        }
+      if let Some(t) = nal_type(nal)
+        && (t == 7 || t == 8)
+      {
+        out.extend_from_slice(nal);
       }
     }
   }

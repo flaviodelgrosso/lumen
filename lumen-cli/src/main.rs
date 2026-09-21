@@ -1,7 +1,5 @@
 //! `lumen` — stream your display to browsers on the LAN.
 
-mod mdns;
-mod network;
 mod serve;
 
 use std::io::IsTerminal;
@@ -10,6 +8,7 @@ use std::net::IpAddr;
 use clap::{Parser, Subcommand};
 use lumen_core::{EncoderPreference, Quality, StreamConfig, normalize_session_name};
 use lumen_media::capture::{list_displays, list_windows};
+use lumen_session::network::LanInterface;
 
 #[derive(Parser)]
 #[command(
@@ -33,6 +32,8 @@ enum Command {
   Displays,
   /// List capturable windows
   Windows,
+  /// Launch the native menu-bar/system-tray app
+  Desktop,
 }
 
 #[derive(Parser)]
@@ -142,6 +143,7 @@ fn main() -> anyhow::Result<()> {
       }
       Ok(())
     }
+    Command::Desktop => lumen_desktop::run(),
   }
 }
 
@@ -174,9 +176,7 @@ fn stream_config(args: &ServeArgs) -> anyhow::Result<StreamConfig> {
 }
 
 /// Ask the user to pick between several plausible LAN interfaces.
-fn pick_interface(
-  interfaces: &[crate::network::LanInterface],
-) -> anyhow::Result<crate::network::LanInterface> {
+fn pick_interface(interfaces: &[LanInterface]) -> anyhow::Result<LanInterface> {
   if interfaces.len() == 1 {
     return Ok(interfaces[0].clone());
   }
@@ -224,6 +224,12 @@ mod tests {
       no_qr: false,
       verbose: false,
     }
+  }
+
+  #[test]
+  fn cli_accepts_the_desktop_command() {
+    let cli = Cli::try_parse_from(["lumen", "desktop"]).expect("desktop must parse");
+    assert!(matches!(cli.command, Some(Command::Desktop)));
   }
 
   #[test]

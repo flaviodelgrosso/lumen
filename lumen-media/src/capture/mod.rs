@@ -118,7 +118,7 @@ pub enum CaptureError {
 /// Abstraction over anything that yields raw frames.
 ///
 /// `next_frame` blocks until a frame is available; run it on a blocking
-/// thread (see the capture task in `lumen-cli`).
+/// thread (see the capture task in `lumen-session`).
 pub trait CaptureSource: Send {
   /// Output dimensions of frames produced by this source.
   fn dimensions(&self) -> Dimensions;
@@ -239,7 +239,7 @@ fn bgra_to_raw(
       "zero-size frame {width}x{height}"
     )));
   }
-  if stride == 0 || stride % 4 != 0 {
+  if stride == 0 || !stride.is_multiple_of(4) {
     return Err(CaptureError::MalformedFrame(format!(
       "row stride {stride} not a positive multiple of 4"
     )));
@@ -381,7 +381,7 @@ impl CaptureSource for FakeCaptureSource {
     let w = usize::try_from(self.dimensions.width).unwrap_or(0);
     let h = usize::try_from(self.dimensions.height).unwrap_or(0);
     let mut pixels = vec![0_u8; w * h * 4];
-    for (i, px) in pixels.chunks_exact_mut(4).enumerate() {
+    for (i, px) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
       let x = (i / 4) % w.max(1);
       let shade = ((x + t as usize * 3) % 256) as u8;
       px[0] = shade;

@@ -186,7 +186,7 @@ impl PcmNormalizer {
     captured_at: Instant,
   ) -> Option<RawAudioFrame> {
     let frame_bytes = self.format.frame_bytes();
-    if frame_bytes == 0 || data.len() % frame_bytes != 0 {
+    if frame_bytes == 0 || !data.len().is_multiple_of(frame_bytes) {
       return None;
     }
     let frames = data.len() / frame_bytes;
@@ -232,13 +232,13 @@ impl PcmNormalizer {
       SampleKind::Float32 => deinterleave(data, channels),
       SampleKind::Int16 => {
         let stride = channels.checked_mul(2)?;
-        if data.len() % stride != 0 {
+        if !data.len().is_multiple_of(stride) {
           return None;
         }
         let mut planes = vec![Vec::with_capacity(data.len() / stride); channels];
         for chunk in data.chunks_exact(stride) {
-          for (plane, sample) in planes.iter_mut().zip(chunk.chunks_exact(2)) {
-            let value = i16::from_le_bytes(sample.try_into().expect("2 bytes"));
+          for (plane, sample) in planes.iter_mut().zip(chunk.as_chunks::<2>().0) {
+            let value = i16::from_le_bytes(*sample);
             plane.push((f64::from(value) / 32_768.0) as f32);
           }
         }
@@ -246,13 +246,13 @@ impl PcmNormalizer {
       }
       SampleKind::Int32 => {
         let stride = channels.checked_mul(4)?;
-        if data.len() % stride != 0 {
+        if !data.len().is_multiple_of(stride) {
           return None;
         }
         let mut planes = vec![Vec::with_capacity(data.len() / stride); channels];
         for chunk in data.chunks_exact(stride) {
-          for (plane, sample) in planes.iter_mut().zip(chunk.chunks_exact(4)) {
-            let value = i32::from_le_bytes(sample.try_into().expect("4 bytes"));
+          for (plane, sample) in planes.iter_mut().zip(chunk.as_chunks::<4>().0) {
+            let value = i32::from_le_bytes(*sample);
             plane.push((f64::from(value) / 2_147_483_648.0) as f32);
           }
         }
@@ -557,10 +557,10 @@ impl Drop for PlatformAudioCapture {
     // poll tick, and the thread releases the audio client, the capture
     // client, and the COM apartment as it exits.
     self.stop.store(true, Ordering::Relaxed);
-    if let Some(engine) = self.engine.take() {
-      if engine.join().is_err() {
-        tracing::warn!("audio capture thread panicked during shutdown");
-      }
+    if let Some(engine) = self.engine.take()
+      && engine.join().is_err()
+    {
+      tracing::warn!("audio capture thread panicked during shutdown");
     }
   }
 }
@@ -587,7 +587,9 @@ mod tests {
 
   fn frame_lanes(samples: &Bytes) -> Vec<f32> {
     samples
-      .chunks_exact(8)
+      .as_chunks::<8>()
+      .0
+      .iter()
       .flat_map(|pair| {
         [
           f32::from_le_bytes(pair[..4].try_into().expect("L")),

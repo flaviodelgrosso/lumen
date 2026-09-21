@@ -3,23 +3,27 @@ resolver = "2"
 members = [
   "lumen-cli",
   "lumen-core",
+  "lumen-desktop",
   "lumen-media",
   "lumen-server",
+  "lumen-session",
   "lumen-webrtc",
 ]
 
 [workspace.package]
 version = "0.1.7"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.90"
 license = "MIT"
 
 [workspace.dependencies]
 # workspace members
 lumen-cli = { path = "lumen-cli" }
 lumen-core = { path = "lumen-core" }
+lumen-desktop = { path = "lumen-desktop" }
 lumen-media = { path = "lumen-media" }
 lumen-server = { path = "lumen-server" }
+lumen-session = { path = "lumen-session" }
 lumen-webrtc = { path = "lumen-webrtc" }
 
 # external
@@ -103,6 +107,16 @@ tokio = { version = "1.53", features = [
 ] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tower-http = { version = "0.7", features = ["fs", "trace"] }
+# Native tray/menu-bar stack (`lumen desktop`): tray icon, menu, clipboard,
+# and browser-open helpers. Default features are off: Linux desktop support is
+# out of scope and GTK/libappindicator would break headless Linux builds.
+arboard = "3.6"
+dispatch = "0.2"
+image = { version = "0.25", default-features = false, features = ["png"] }
+muda = { version = "0.20", default-features = false, features = ["common-controls-v6"] }
+open = "5.4"
+parking_lot = "0.12"
+tray-icon = { version = "0.25", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 webrtc = "0.20"

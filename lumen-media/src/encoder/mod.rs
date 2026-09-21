@@ -327,7 +327,7 @@ impl FakeVideoEncoder {
 impl VideoEncoder for FakeVideoEncoder {
   fn encode(&mut self, _frame: &RawFrame) -> Result<Option<EncodedFrame>, EncodeError> {
     self.ever_encoded.store(true, Ordering::Relaxed);
-    let keyframe = self.keyframe_requested || self.sequence % self.keyframes_every == 0;
+    let keyframe = self.keyframe_requested || self.sequence.is_multiple_of(self.keyframes_every);
     self.keyframe_requested = false;
     let seq = self.sequence;
     self.sequence += 1;
@@ -361,7 +361,7 @@ pub(crate) mod tests_util {
   pub(crate) fn gradient_frame(width: u32, height: u32) -> RawFrame {
     let mut pixels =
       vec![0_u8; usize::try_from(width).unwrap_or(0) * usize::try_from(height).unwrap_or(0) * 4];
-    for (i, px) in pixels.chunks_exact_mut(4).enumerate() {
+    for (i, px) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
       px[0] = (i % 256) as u8;
       px[1] = (i / 7 % 256) as u8;
       px[2] = (i / 13 % 256) as u8;

@@ -1,0 +1,33 @@
+[package]
+name = "lumen-desktop"
+description = "Lumen Desktop — native menu-bar/system-tray frontend for the Lumen sharing session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+arboard.workspace = true
+image.workspace = true
+lumen-session.workspace = true
+muda.workspace = true
+open.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tray-icon.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch.workspace = true
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSApplication",
+  "NSResponder",
+] }
+
+[lints]
+workspace = true
