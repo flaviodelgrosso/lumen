@@ -29,4 +29,12 @@ pub enum ConfigError {
     /// The offending raw value.
     value: u32,
   },
+  /// A `--name` session name exceeded the maximum display length.
+  #[error("invalid session name {value:?}: at most {max} characters")]
+  InvalidSessionName {
+    /// The normalized value that was rejected.
+    value: String,
+    /// The enforced maximum, in characters.
+    max: usize,
+  },
 }

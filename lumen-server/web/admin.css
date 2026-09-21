@@ -78,6 +78,18 @@ body {
   padding: 2px 9px;
 }
 
+/* Session name (--name): plain display text, single line, ellipsized —
+   never markup. */
+#session-name {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 #bar-right {
   display: flex;
   align-items: center;

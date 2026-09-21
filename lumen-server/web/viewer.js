@@ -185,7 +185,14 @@
 
   function renderOverlay() {
     if (!currentOverlay) return;
-    overlayTitle.textContent = t(currentOverlay.titleKey);
+    // The session name replaces the generic title while the viewer is
+    // still waiting for the host; error states keep their own title so
+    // the status stays legible. textContent keeps the host-provided name
+    // inert display text, never markup.
+    overlayTitle.textContent =
+      sessionName && currentOverlay.mode !== "error"
+        ? sessionName
+        : t(currentOverlay.titleKey);
     overlayMessage.textContent =
       currentOverlay.rawMessage || t(currentOverlay.msgKey);
     const mode = currentOverlay.mode;
@@ -551,6 +558,7 @@
   let joinId = null;
   let joinToken = null;
   let pairingRequired = false;
+  let sessionName = null; // public display metadata from /api/join/config
   let pairingCode = null;
   let terminal = false; // gone: denied, host ended, unsupported browser
 
@@ -1035,6 +1043,10 @@
       const response = await fetch("/api/join/config", { cache: "no-store" });
       const config = response.ok ? await response.json() : null;
       pairingRequired = Boolean(config && config.pairingRequired);
+      sessionName =
+        config && typeof config.sessionName === "string" && config.sessionName
+          ? config.sessionName
+          : null;
     } catch {
       // The normal join path reports a server outage and retries.
     }

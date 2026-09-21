@@ -328,6 +328,7 @@ fn build_stream_info(
     encoder_label: encoder_backend.to_owned(),
     audio_label: audio_label(cfg, audio_enabled),
     viewer_url: viewer_url.to_owned(),
+    session_name: cfg.session_name.clone(),
   }
 }
 
@@ -343,6 +344,9 @@ fn print_banner(
   println!();
   println!("Lumen screen sharing server started.");
   println!();
+  if let Some(name) = &stream.session_name {
+    println!("Session:      {name}");
+  }
   println!("Display:      {}", stream.source_label);
   println!(
     "Quality:      {} ({} fps, max {})",

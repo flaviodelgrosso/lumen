@@ -81,6 +81,14 @@ async fn start(approve: bool) -> TestServer {
 }
 
 async fn start_with_pairing(approve: bool, pairing: Option<PairingCode>) -> TestServer {
+  start_with(approve, pairing, None).await
+}
+
+async fn start_with(
+  approve: bool,
+  pairing: Option<PairingCode>,
+  session_name: Option<&str>,
+) -> TestServer {
   let admin_token = SessionToken::generate().expect("admin token");
   let (authorizer, approvals) = Authorizer::channel(16);
   if approve {
@@ -113,6 +121,7 @@ async fn start_with_pairing(approve: bool, pairing: Option<PairingCode>) -> Test
       encoder_label: "fake".to_owned(),
       audio_label: "off".to_owned(),
       viewer_url: "http://lumen.local:0".to_owned(),
+      session_name: session_name.map(str::to_owned),
     },
     stats: Arc::new(lumen_core::PipelineStats::default()),
   })
@@ -809,5 +818,118 @@ async fn malformed_signaling_frames_are_ignored() {
     .await
     .expect("send answer");
   let _err = next_json_type(&mut stream, "error").await;
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn join_config_publishes_the_session_name() {
+  let mut srv = start_with(true, None, Some("Architecture Workshop")).await;
+  let (status, body) = http_request(srv.addr, "GET", "/api/join/config").await;
+  assert_eq!(status, 200);
+  let json: serde_json::Value =
+    serde_json::from_str(body.rsplit("\r\n\r\n").next().unwrap()).unwrap();
+  assert_eq!(json["sessionName"], "Architecture Workshop");
+  assert_eq!(json["pairingRequired"], false);
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn join_config_reports_no_session_name_when_unset() {
+  let mut srv = start(true).await;
+  let (status, body) = http_request(srv.addr, "GET", "/api/join/config").await;
+  assert_eq!(status, 200);
+  let json: serde_json::Value =
+    serde_json::from_str(body.rsplit("\r\n\r\n").next().unwrap()).unwrap();
+  assert!(json["sessionName"].is_null(), "no name → JSON null");
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn session_name_is_inert_json_text_never_markup() {
+  // The public join-config endpoint must carry hostile names as plain
+  // JSON string data (the viewer renders them with textContent): the
+  // transported value equals the input exactly, with no HTML wrapping.
+  let hostile = "<script>alert(1)</script>";
+  let mut srv = start_with(true, None, Some(hostile)).await;
+  let (status, body) = http_request(srv.addr, "GET", "/api/join/config").await;
+  assert_eq!(status, 200);
+  assert!(
+    body.to_ascii_lowercase().contains("application/json"),
+    "join config stays a JSON document, never an HTML fragment"
+  );
+  let json: serde_json::Value =
+    serde_json::from_str(body.rsplit("\r\n\r\n").next().unwrap()).unwrap();
+  assert_eq!(json["sessionName"].as_str(), Some(hostile));
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn session_name_never_reaches_join_secrets_or_the_viewer_url() {
+  let marker = "WorkshopSecretName";
+  let mut srv = start_with(false, None, Some(marker)).await;
+
+  // The join response (request id + polling token) carries no name.
+  let (status, body) = http_request(srv.addr, "POST", "/api/join").await;
+  assert_eq!(status, 201);
+  assert!(
+    !body.contains(marker),
+    "join response must not leak the name"
+  );
+  let json: serde_json::Value =
+    serde_json::from_str(body.rsplit("\r\n\r\n").next().unwrap()).unwrap();
+  let viewer = ViewerJoin {
+    id: json["requestId"].as_str().unwrap().to_owned(),
+    token: json["joinToken"].as_str().unwrap().to_owned(),
+  };
+
+  // Approving through the admin surface yields a grant that also carries
+  // no name, and the canonical viewer URL stays name-free.
+  let pending = wait_pending_json(&srv).await;
+  let pending_id = pending["id"].as_str().expect("pending id").to_owned();
+  let (status, _) = http_request(
+    srv.addr,
+    "POST",
+    &format!(
+      "/api/admin/pending/{pending_id}/allow?{}",
+      srv.admin_query()
+    ),
+  )
+  .await;
+  assert_eq!(status, 200);
+  let grant = wait_approved(&srv, &viewer).await;
+  assert!(!grant.contains(marker), "grants must not embed the name");
+  let state = admin_state(&srv).await;
+  assert!(!state["viewerUrl"].as_str().unwrap().contains(marker));
+  assert_eq!(state["sessionName"], marker, "the name is state metadata");
+  srv.stop().await;
+}
+
+#[tokio::test]
+async fn named_session_still_requires_host_approval() {
+  // A session name is display metadata: the approval flow is unchanged.
+  let mut srv = start_with(false, None, Some("Architecture Workshop")).await;
+  let viewer = join(&srv).await;
+  let pending = wait_pending_json(&srv).await;
+  assert_eq!(pending["id"].as_str().expect("pending id"), viewer.id);
+  let before = poll_join(&srv, &viewer).await;
+  assert_eq!(before["status"], "pending", "the name admits nobody");
+  let (status, _) = http_request(
+    srv.addr,
+    "POST",
+    &format!(
+      "/api/admin/pending/{}/allow?{}",
+      pending["id"].as_str().unwrap(),
+      srv.admin_query()
+    ),
+  )
+  .await;
+  assert_eq!(status, 200);
+  let grant = wait_approved(&srv, &viewer).await;
+  let mut stream = ws_connect(srv.addr, &format!("/ws/{grant}"))
+    .await
+    .expect("approval still works with a name set");
+  let offer = next_json_type(&mut stream, "offer").await;
+  assert!(offer["sdp"].as_str().is_some());
+  stream.close(None).await.ok();
   srv.stop().await;
 }

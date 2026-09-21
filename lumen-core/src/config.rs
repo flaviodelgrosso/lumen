@@ -2,6 +2,54 @@
 
 use std::str::FromStr;
 
+/// Maximum length, in characters, of the `--name` session name.
+pub const MAX_SESSION_NAME_LEN: usize = 64;
+
+/// Normalize a `--name` session name for display.
+///
+/// The name is untrusted host text: control characters (including
+/// terminal escapes and newlines) are replaced with spaces, whitespace
+/// runs are collapsed and the result trimmed, so the value stays a safe
+/// single-line label. Blank input normalizes to `None` (no name). The
+/// name is display metadata only: it never participates in URLs, tokens
+/// or any authorization decision, and UIs must render it through text
+/// APIs (`textContent`), never as markup.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::InvalidSessionName`] when the normalized name
+/// exceeds [`MAX_SESSION_NAME_LEN`] characters.
+///
+/// # Examples
+///
+/// ```
+/// use lumen_core::normalize_session_name;
+///
+/// assert_eq!(
+///   normalize_session_name("  Architecture\u{1} Workshop \n").unwrap().as_deref(),
+///   Some("Architecture Workshop")
+/// );
+/// assert_eq!(normalize_session_name("   ").unwrap(), None);
+/// ```
+pub fn normalize_session_name(raw: &str) -> Result<Option<String>, ConfigError> {
+  let collapsed: String = raw
+    .chars()
+    .map(|c| if c.is_control() { ' ' } else { c })
+    .collect();
+  let name = collapsed.split_whitespace().collect::<Vec<_>>().join(" ");
+  if name.is_empty() {
+    return Ok(None);
+  }
+  let len = name.chars().count();
+  if len > MAX_SESSION_NAME_LEN {
+    return Err(ConfigError::InvalidSessionName {
+      value: name,
+      max: MAX_SESSION_NAME_LEN,
+    });
+  }
+  Ok(Some(name))
+}
+
 use serde::{Deserialize, Serialize};
 
 use crate::Dimensions;
@@ -177,6 +225,9 @@ pub struct StreamConfig {
   pub audio_bitrate: Bitrate,
   /// Video encoder backend preference.
   pub encoder: EncoderPreference,
+  /// Optional human-readable session name (`--name`), normalized for
+  /// display. Public presentation metadata; never a capability.
+  pub session_name: Option<String>,
 }
 
 impl Default for StreamConfig {
@@ -189,6 +240,7 @@ impl Default for StreamConfig {
       audio: true,
       audio_bitrate: Bitrate(128_000),
       encoder: EncoderPreference::default(),
+      session_name: None,
     }
   }
 }
@@ -353,5 +405,74 @@ mod tests {
   #[test]
   fn stream_config_defaults_to_auto_encoder() {
     assert_eq!(StreamConfig::default().encoder, EncoderPreference::Auto);
+  }
+
+  #[test]
+  fn session_name_trims_and_collapses_whitespace() {
+    assert_eq!(
+      normalize_session_name("  Architecture   Workshop  ")
+        .unwrap()
+        .as_deref(),
+      Some("Architecture Workshop")
+    );
+  }
+
+  #[test]
+  fn session_name_replaces_control_characters() {
+    // Newlines/tabs keep word boundaries; other control characters
+    // (SOH, ESC, C1) collapse into plain spaces.
+    assert_eq!(
+      normalize_session_name("My\u{1} \tSession\nName\u{1b}[31m")
+        .unwrap()
+        .as_deref(),
+      Some("My Session Name [31m")
+    );
+    assert_eq!(
+      normalize_session_name("A\u{82}\u{9f}B").unwrap().as_deref(),
+      Some("A B")
+    );
+  }
+
+  #[test]
+  fn blank_session_name_is_no_name() {
+    assert_eq!(normalize_session_name("").unwrap(), None);
+    assert_eq!(normalize_session_name("   \n\t\u{0} ").unwrap(), None);
+  }
+
+  #[test]
+  fn session_name_length_is_counted_in_characters() {
+    let at_max = "é".repeat(MAX_SESSION_NAME_LEN);
+    assert_eq!(
+      normalize_session_name(&at_max)
+        .unwrap()
+        .unwrap()
+        .chars()
+        .count(),
+      MAX_SESSION_NAME_LEN
+    );
+    let too_long = "é".repeat(MAX_SESSION_NAME_LEN + 1);
+    assert!(matches!(
+      normalize_session_name(&too_long),
+      Err(ConfigError::InvalidSessionName { max, .. })
+        if max == MAX_SESSION_NAME_LEN
+    ));
+  }
+
+  #[test]
+  fn session_name_keeps_markup_as_inert_text() {
+    // Normalization does not strip markup: the value is inert display
+    // text (UIs render it with textContent, never innerHTML).
+    let hostile = "<script>alert(1)</script>";
+    assert_eq!(
+      normalize_session_name(hostile).unwrap().as_deref(),
+      Some(hostile)
+    );
+    let img = r#"<img src=x onerror="alert(1)">"#;
+    assert_eq!(normalize_session_name(img).unwrap().as_deref(), Some(img));
+  }
+
+  #[test]
+  fn stream_config_defaults_to_no_session_name() {
+    assert_eq!(StreamConfig::default().session_name, None);
   }
 }

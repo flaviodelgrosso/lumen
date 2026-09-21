@@ -113,6 +113,7 @@ lumen windows          # list capturable windows
 | `--encoder <backend>`  | `auto`  | `auto` \| `software` \| `hardware` — see [Encode](#encode)           |
 | `--quality <preset>`   | `auto`  | `low` \| `medium` \| `high` \| `auto`                                |
 | `--max-bitrate <rate>` | preset  | Ceiling, e.g. `8000k` or `2M`                                        |
+| `--name <session-name>`| —       | Session name shown to viewers and on the host dashboard (≤ 64 chars)  |
 | `--auto-accept`        | off     | Admit viewers that enter the current pairing code                     |
 | `--allow-lan-admin`    | off     | Let non-localhost clients reach the host dashboard                   |
 | `--no-audio`           | off     | Stream video only (no system audio)                                  |
@@ -125,6 +126,7 @@ lumen windows          # list capturable windows
 ```sh
 lumen serve --window 42 --fps 60 --quality high   # one window, high motion
 lumen serve --no-audio --auto-accept              # quick, unattended video-only stream
+lumen serve --name "Architecture Workshop"           # named session for a classroom
 ```
 
 ## How it works
@@ -153,7 +155,7 @@ One `webrtc-rs` peer connection per viewer (negotiated `recvonly` answer from th
 
 - `http://lumen.local:3131` is intentionally **LAN-discoverable**, not an authentication secret. Opening `/` grants nothing. Lumen keeps four distinct capability concepts: **PeerId** is a public per-viewer identity shown in logs and host UI; **JoinToken** is a fresh OS-random 256-bit secret that permits polling only the request that created it; **ViewerGrant** is a separate OS-random 256-bit, short-lived, single-use signaling capability, checked in constant time before one WebSocket is opened; and **AdminToken** is an independent 256-bit dashboard/admin capability. A PeerId never reveals a grant; JoinToken, ViewerGrant, and AdminToken are not interchangeable.
 - In normal mode, every viewer needs explicit terminal or dashboard **Allow** approval. With `--auto-accept`, the host prints a six-digit pairing code generated only for that `lumen serve` process; the viewer must enter it before an unattended join is authorized. The pairing code is never persisted, never grants admin access, never enters the viewer URL, and is not embedded in the QR code. Join creation is globally bounded and additionally limited per source IPv4/IPv6 address, with throttled repeated attempts.
-- The admin surface (`/admin/<admin-token>`, `/api/admin/*`) is **localhost-only by default**; `--allow-lan-admin` extends it to the LAN. Admin clients can see the pending queue, **Allow/Deny** viewers (`POST /api/admin/pending/<id>/allow|deny`), and **kick** connected ones (`POST /api/admin/peers/<id>/disconnect`).
+- With `--name`, the session name is **public display metadata only**: it is served as a JSON string (`GET /api/join/config`, `/api/admin/state`) and rendered through text APIs, never as markup. Control characters are stripped and the length is capped at 64 characters. The name never enters a viewer URL, join token, viewer grant, admin token or QR payload, and it never influences approval or any other authorization decision.
 - Traffic is **LAN-only**: ICE is restricted to LAN addresses, mDNS `.local` candidates are resolved in query mode, and a loopback socket is bound only for a viewer that is itself on loopback. The HTTP server is plain `http://` (no TLS certificate warnings), but the media itself — video and audio — is SRTP-encrypted end to end. Do not expose the port beyond your LAN.
 
 > [!WARNING]

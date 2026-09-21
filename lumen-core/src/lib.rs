@@ -5,7 +5,9 @@ pub mod error;
 pub mod media;
 pub mod stats;
 
-pub use config::{Bitrate, EncoderPreference, Quality, StreamConfig};
+pub use config::{
+  Bitrate, EncoderPreference, MAX_SESSION_NAME_LEN, Quality, StreamConfig, normalize_session_name,
+};
 pub use error::ConfigError;
 pub use media::{
   AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, Dimensions, EncodedAudioFrame, EncodedFrame,

@@ -122,6 +122,11 @@ pub struct StreamInfo {
   /// Canonical viewer URL (stable `lumen.local` hostname when mDNS
   /// registration succeeded, LAN IP otherwise). No secret in the URL.
   pub viewer_url: String,
+  /// Optional human-readable session name (`--name`), shown to viewers
+  /// before playback and on the host dashboard. Public display metadata:
+  /// never part of a URL, token, grant or approval decision, and UIs must
+  /// render it as text, never as markup.
+  pub session_name: Option<String>,
 }
 
 /// Runtime wiring the server needs from the orchestrator.
@@ -321,8 +326,11 @@ const INVALID_LINK_HTML: &str = r#"<!doctype html>
 /// Pairing is only required in unattended mode. The response exposes no
 /// capability and lets the device-agnostic viewer choose the right UI.
 async fn join_config(State(state): State<Arc<AppState>>) -> Response {
-  axum::Json(serde_json::json!({"pairingRequired": state.auto_accept_pairing.is_some()}))
-    .into_response()
+  axum::Json(serde_json::json!({
+    "pairingRequired": state.auto_accept_pairing.is_some(),
+    "sessionName": state.stream.session_name,
+  }))
+  .into_response()
 }
 
 #[derive(Deserialize)]
@@ -527,6 +535,7 @@ async fn admin_state(
     "encoder": state.stream.encoder_label,
     "audio": state.stream.audio_label,
     "viewerUrl": state.stream.viewer_url,
+    "sessionName": state.stream.session_name,
     "pending": pending,
     "peers": peers,
   }))

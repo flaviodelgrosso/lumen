@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 use std::net::IpAddr;
 
 use clap::{Parser, Subcommand};
-use lumen_core::{EncoderPreference, Quality, StreamConfig};
+use lumen_core::{EncoderPreference, Quality, StreamConfig, normalize_session_name};
 use lumen_media::capture::{list_displays, list_windows};
 
 #[derive(Parser)]
@@ -56,6 +56,11 @@ struct ServeArgs {
   /// TCP port for the viewer/signaling server (default: 3131)
   #[arg(long, value_name = "port")]
   port: Option<u16>,
+
+  /// Human-readable session name shown to viewers and on the host
+  /// dashboard (display metadata only; max 64 characters)
+  #[arg(long, value_name = "session-name")]
+  name: Option<String>,
 
   /// Target capture/encode frame rate (default: 60)
   #[arg(long, value_name = "fps")]
@@ -105,6 +110,7 @@ fn main() -> anyhow::Result<()> {
     encoder: None,
     quality: None,
     max_bitrate: None,
+    name: None,
     auto_accept: false,
     allow_lan_admin: false,
     no_audio: false,
@@ -139,7 +145,7 @@ fn main() -> anyhow::Result<()> {
   }
 }
 
-/// Parse quality/bitrate/fps flags into a validated [`StreamConfig`].
+/// Parse quality/bitrate/fps/name flags into a validated [`StreamConfig`].
 fn stream_config(args: &ServeArgs) -> anyhow::Result<StreamConfig> {
   let mut cfg = StreamConfig::default();
   if let Some(q) = &args.quality {
@@ -158,6 +164,9 @@ fn stream_config(args: &ServeArgs) -> anyhow::Result<StreamConfig> {
     cfg.encoder = e
       .parse::<EncoderPreference>()
       .map_err(|e: lumen_core::ConfigError| anyhow::anyhow!("{e}"))?;
+  }
+  if let Some(n) = &args.name {
+    cfg.session_name = normalize_session_name(n).map_err(|e| anyhow::anyhow!("{e}"))?;
   }
   cfg.audio = !args.no_audio;
   cfg.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -192,4 +201,77 @@ fn pick_interface(
     .default(0)
     .interact()?;
   Ok(interfaces[idx].clone())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn serve_args_with(name: Option<&str>) -> ServeArgs {
+    ServeArgs {
+      display: None,
+      window: None,
+      bind: None,
+      port: None,
+      name: name.map(str::to_owned),
+      fps: None,
+      encoder: None,
+      quality: None,
+      max_bitrate: None,
+      auto_accept: false,
+      allow_lan_admin: false,
+      no_audio: false,
+      no_qr: false,
+      verbose: false,
+    }
+  }
+
+  #[test]
+  fn cli_accepts_the_name_flag() {
+    let cli = Cli::try_parse_from(["lumen", "serve", "--name", "Architecture Workshop"])
+      .expect("--name must parse");
+    let Some(Command::Serve(args)) = cli.command else {
+      panic!("expected a serve command");
+    };
+    assert_eq!(args.name.as_deref(), Some("Architecture Workshop"));
+  }
+
+  #[test]
+  fn name_flag_is_optional() {
+    let cli = Cli::try_parse_from(["lumen", "serve"]).expect("serve must parse");
+    let Some(Command::Serve(args)) = cli.command else {
+      panic!("expected a serve command");
+    };
+    assert_eq!(args.name, None);
+  }
+
+  #[test]
+  fn name_flows_into_shared_config() {
+    let cfg =
+      stream_config(&serve_args_with(Some("  Architecture  Workshop "))).expect("valid name");
+    assert_eq!(cfg.session_name.as_deref(), Some("Architecture Workshop"));
+  }
+
+  #[test]
+  fn no_name_keeps_the_default_config_unchanged() {
+    assert_eq!(
+      stream_config(&serve_args_with(None)).expect("default config"),
+      StreamConfig::default()
+    );
+  }
+
+  #[test]
+  fn control_characters_never_reach_the_config() {
+    let cfg = stream_config(&serve_args_with(Some("Team\u{a}\u{1b}[2J Briefing")))
+      .expect("control characters are sanitized, not rejected");
+    assert_eq!(cfg.session_name.as_deref(), Some("Team [2J Briefing"));
+  }
+
+  #[test]
+  fn overlong_name_is_rejected_with_guidance() {
+    let long = "x".repeat(lumen_core::MAX_SESSION_NAME_LEN + 1);
+    let err =
+      stream_config(&serve_args_with(Some(&long))).expect_err("overlong names must be rejected");
+    assert!(err.to_string().contains("at most 64 characters"));
+  }
 }

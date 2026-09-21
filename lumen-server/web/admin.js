@@ -66,6 +66,7 @@
   const connectedList = $("connected-list");
   const connectedCount = $("connected-count");
   const connectedEmpty = $("connected-empty");
+  const sessionName = $("session-name");
 
   qr.src = `/api/admin/qr?token=${encodeURIComponent(token)}`;
 
@@ -109,6 +110,13 @@
     sEncoder.textContent = state.encoder || "—";
     sAudio.textContent = state.audio || "—";
     urlInput.value = state.viewerUrl || "";
+    // Public display metadata; textContent keeps it inert, never markup.
+    if (state.sessionName) {
+      sessionName.textContent = state.sessionName;
+      sessionName.hidden = false;
+    } else {
+      sessionName.hidden = true;
+    }
 
     renderPending(state.pending || []);
     renderConnected(state.peers || []);
