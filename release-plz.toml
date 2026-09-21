@@ -1,62 +1,29 @@
 [workspace]
-# Lumen is distributed from git tags only; nothing is published to crates.io.
 git_only = true
 publish = false
 
-# Process every crate in the workspace.
 release = true
-release_always = false
+release_always = true
 
-# Every workspace crate gets its own internal release baseline.
-# Example:
-#   lumen-core-v0.1.8
-#   lumen-media-v0.1.8
-#   lumen-session-v0.1.8
-#
-# This makes adding/removing workspace crates safe: a new crate simply starts
-# with its first package-specific tag instead of trying to resolve an older
-# global vX.Y.Z tag where it did not exist yet.
 git_tag_name = "{{ package }}-v{{ version }}"
 git_tag_enable = true
 
-# Internal crate tags must not create GitHub Releases.
 git_release_enable = false
-
-# Keep a single root changelog owned by lumen-cli.
 changelog_update = false
-
-# These are internal crates; version bumps are driven by commits rather than
-# public-library API compatibility checks.
 semver_check = false
-
-
-# ---------------------------------------------------------------------------
-# Public Lumen release
-# ---------------------------------------------------------------------------
 
 [[package]]
 name = "lumen-cli"
 
-# lumen-cli owns the public tag and GitHub Release:
-#
-#   v0.1.8
-#
-# while the other crates use package-specific baseline tags.
 git_tag_name = "v{{ version }}"
 git_tag_enable = true
 
 git_release_enable = true
 git_release_name = "v{{ version }}"
 
-# Maintain one changelog at the repository root.
 changelog_update = true
 changelog_path = "./CHANGELOG.md"
 
-# Include changes from internal crates in the public Lumen changelog.
-#
-# This list is only for changelog aggregation. Forgetting to add a future
-# crate here will not break versioning or releases; its commits just won't
-# appear automatically in lumen-cli's changelog until it is added.
 changelog_include = [
   "lumen-core",
   "lumen-media",
