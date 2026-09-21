@@ -21,7 +21,7 @@ use crate::capture::CaptureError;
 /// Abstraction over anything that yields raw PCM audio buffers.
 ///
 /// `next_audio` blocks for at most [`POLL_INTERVAL`]; run it on a blocking
-/// thread (see the audio task in `lumen-cli`) and re-check shutdown after
+/// thread (see the audio task in `lumen-session`) and re-check shutdown after
 /// every `Ok(None)`.
 pub trait AudioCaptureSource: Send {
   /// Poll for the next PCM buffer; `Ok(None)` means "nothing yet".

@@ -118,7 +118,7 @@ pub enum CaptureError {
 /// Abstraction over anything that yields raw frames.
 ///
 /// `next_frame` blocks until a frame is available; run it on a blocking
-/// thread (see the capture task in `lumen-cli`).
+/// thread (see the capture task in `lumen-session`).
 pub trait CaptureSource: Send {
   /// Output dimensions of frames produced by this source.
   fn dimensions(&self) -> Dimensions;

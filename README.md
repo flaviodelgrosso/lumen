@@ -37,6 +37,7 @@ System audio ─────► Opus ───┘
 - **Simple discovery** — open `lumen.local:3131`, use the printed LAN address, or scan the QR code.
 - **Controlled access** — approve viewers individually or use a short pairing code for unattended sessions.
 - **Built-in host dashboard** — inspect the stream, approve requests and disconnect viewers.
+- **Menu bar app** — start and stop sharing from the macOS menu bar or Windows system tray.
 - **Local by design** — no account, STUN, TURN or cloud service is required.
 
 ## Quick start
@@ -178,6 +179,18 @@ Each session includes a lightweight host dashboard showing:
 
 The dashboard is restricted to the host machine by default.
 
+### Menu bar app
+
+`lumen-desktop` is a native menu bar (macOS) / system tray (Windows) front end for the same session engine — it drives the session in-process, without spawning the CLI.
+
+```bash
+cargo run -p lumen-desktop
+```
+
+The menu offers **Start Sharing** / **Stop Sharing**, **Copy Viewer Link**, **Open Dashboard** and **Quit** (which stops the session before exiting). The tray tooltip reflects the session state, and menu entries enable and disable with it.
+
+Sessions use the default configuration — primary display, 60 FPS, system audio, manual approval — and need the same screen-recording and local-network permissions as the CLI. On macOS the icon is a template image, so the menu bar tints it for light and dark appearances. Building `lumen-desktop` requires Rust 1.90+ (the tray crates' minimum); the rest of the workspace still builds on Rust 1.85+.
+
 ## How it works
 
 ### Capture
@@ -302,13 +315,15 @@ Browser autoplay policies also require the viewer to explicitly unmute audio.
 
 Lumen is a Rust workspace split by responsibility:
 
-| Crate          | Purpose                                                   |
-| -------------- | --------------------------------------------------------- |
-| `lumen-core`   | Shared configuration, media types and statistics          |
-| `lumen-media`  | Native capture, H.264 encoders and Opus audio             |
-| `lumen-webrtc` | Per-viewer WebRTC connections and media tracks            |
-| `lumen-server` | HTTP, signaling, approvals, dashboard and embedded viewer |
-| `lumen-cli`    | CLI, LAN discovery and pipeline orchestration             |
+| Crate           | Purpose                                                   |
+| --------------- | --------------------------------------------------------- |
+| `lumen-core`    | Shared configuration, media types and statistics          |
+| `lumen-media`   | Native capture, H.264 encoders and Opus audio             |
+| `lumen-webrtc`  | Per-viewer WebRTC connections and media tracks            |
+| `lumen-server`  | HTTP, signaling, approvals, dashboard and embedded viewer |
+| `lumen-session` | Shared session engine and start/stop controller           |
+| `lumen-cli`     | CLI front end: interface prompt, banner, approval loop    |
+| `lumen-desktop` | Native menu bar / system tray app                         |
 
 Run the complete quality gate with:
 
