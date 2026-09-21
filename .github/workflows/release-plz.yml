@@ -99,7 +99,7 @@ jobs:
 
     env:
       VERSION: ${{ needs.release-meta.outputs.version }}
-      ARCHIVE: lumen-${{ needs.release-meta.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}
+      ARCHIVE: lumen-v${{ needs.release-meta.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}
     steps:
       - name: Checkout released tag
         uses: actions/checkout@v7
@@ -201,7 +201,9 @@ jobs:
           cd dist
           tarball="lumen-v${VERSION}-aarch64-apple-darwin.tar.gz"
           archive="lumen-v${VERSION}-x86_64-pc-windows-msvc.zip"
-          # Never publish a partially populated release.
+          # The GitHub Release is created by release-plz before these binaries
+          # are built; a missing asset here must fail the workflow visibly
+          # instead of leaving an incomplete release reported as successful.
           for asset in "$tarball" "$archive"; do
             if [ ! -f "$asset" ]; then
               echo "::error::required release asset missing: $asset"

@@ -62,7 +62,14 @@ tar -xzf lumen-vX.Y.Z-aarch64-apple-darwin.tar.gz   # Windows: extract the .zip
 ./lumen                                             # Windows: lumen.exe
 ```
 
-Each release also ships `SHA256SUMS` covering both archives — verify with `shasum -a 256 -c SHA256SUMS` (macOS) or `sha256sum -c SHA256SUMS` (Git Bash on Windows).
+Each release also ships `SHA256SUMS` covering both archives. Verify only the archive you downloaded:
+
+```bash
+# macOS
+grep 'aarch64-apple-darwin.tar.gz' SHA256SUMS | shasum -a 256 -c -
+# Windows (Git Bash)
+grep 'x86_64-pc-windows-msvc.zip' SHA256SUMS | sha256sum -c -
+```
 
 To build from source instead, using the build tools above:
 
