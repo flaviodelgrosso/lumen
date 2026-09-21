@@ -115,7 +115,7 @@ pub struct StreamInfo {
   pub quality: String,
   /// Effective encoder bitrate, human-readable (`8.0M` style).
   pub bitrate_label: String,
-  /// Selected encoder backend (`openh264`, `videotoolbox`).
+  /// Selected encoder backend (`openh264`, `videotoolbox`, `media-foundation`).
   pub encoder_label: String,
   /// Audio description (`Opus 128k stereo`, `off`, `unavailable`).
   pub audio_label: String,

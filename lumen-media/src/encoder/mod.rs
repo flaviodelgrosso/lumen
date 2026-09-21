@@ -3,7 +3,9 @@
 //! Video: [`OpenH264Encoder`] wraps the bundled Cisco `OpenH264` library
 //! (no system `FFmpeg`) and is the software baseline on every platform;
 //! on macOS [`VideoToolboxEncoder`] wraps the native `VideoToolbox` H.264
-//! encoder. [`create_video_encoder`] selects between them from an
+//! encoder and on Windows [`MediaFoundationEncoder`] wraps a
+//! hardware-backed `Media Foundation` encoder MFT.
+//! [`create_video_encoder`] selects between them from an
 //! [`lumen_core::EncoderPreference`] and reports the chosen backend.
 //!
 //! Audio: [`OpusAudioEncoder`] wraps `libopus` (bundled via the `opus`
@@ -21,14 +23,20 @@ use lumen_core::{Bitrate, Dimensions, EncodedFrame, EncoderPreference, RawFrame}
 use thiserror::Error;
 
 pub mod audio;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 mod avcc;
+#[cfg(any(target_os = "windows", test))]
+mod nv12;
 mod openh264;
 
+#[cfg(target_os = "windows")]
+mod mediafoundation;
 #[cfg(target_os = "macos")]
 mod videotoolbox;
 
 pub use audio::{AudioEncoder, FakeAudioEncoder, OpusAudioEncoder};
+#[cfg(target_os = "windows")]
+pub use mediafoundation::MediaFoundationEncoder;
 pub use openh264::OpenH264Encoder;
 #[cfg(target_os = "macos")]
 pub use videotoolbox::VideoToolboxEncoder;
@@ -37,6 +45,8 @@ pub use videotoolbox::VideoToolboxEncoder;
 pub const BACKEND_OPENH264: &str = "openh264";
 /// Backend name reported for the macOS `VideoToolbox` hardware encoder.
 pub const BACKEND_VIDEOTOOLBOX: &str = "videotoolbox";
+/// Backend name reported for the Windows `Media Foundation` hardware encoder.
+pub const BACKEND_MEDIA_FOUNDATION: &str = "media-foundation";
 
 /// Errors from encoding.
 #[derive(Debug, Error)]
@@ -96,7 +106,7 @@ pub trait VideoEncoder: Send {
 }
 
 /// A chosen video encoder plus the backend name it should be reported as
-/// (e.g. `openh264`, `videotoolbox`).
+/// (e.g. `openh264`, `videotoolbox`, `media-foundation`).
 pub struct VideoEncoderSetup {
   /// The selected encoder.
   pub encoder: Box<dyn VideoEncoder>,
@@ -189,7 +199,25 @@ fn new_hardware_encoder(
   })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn new_hardware_encoder(
+  dimensions: Dimensions,
+  fps: u32,
+  bitrate: Bitrate,
+  keyframe_interval_frames: u32,
+) -> Result<VideoEncoderSetup, EncodeError> {
+  Ok(VideoEncoderSetup {
+    encoder: Box::new(MediaFoundationEncoder::new(
+      dimensions,
+      fps,
+      bitrate,
+      keyframe_interval_frames,
+    )?),
+    backend: BACKEND_MEDIA_FOUNDATION,
+  })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn new_hardware_encoder(
   dimensions: Dimensions,
   fps: u32,
@@ -197,8 +225,8 @@ fn new_hardware_encoder(
   keyframe_interval_frames: u32,
 ) -> Result<VideoEncoderSetup, EncodeError> {
   let _ = (dimensions, fps, bitrate, keyframe_interval_frames);
-  // The Media Foundation backend (Windows) is a separate milestone; until
-  // it exists there is no native hardware encoder on this platform.
+  // macOS and Windows are the only platforms with a native hardware
+  // H.264 encoder backend.
   Err(EncodeError::HardwareUnavailable(
     "no native hardware H.264 encoder exists on this platform".to_owned(),
   ))
@@ -404,7 +432,7 @@ mod tests {
     .expect("auto selection must always succeed");
     assert!(matches!(
       setup.backend,
-      BACKEND_OPENH264 | BACKEND_VIDEOTOOLBOX
+      BACKEND_OPENH264 | BACKEND_VIDEOTOOLBOX | BACKEND_MEDIA_FOUNDATION
     ));
     let frame = gradient_frame(64, 64);
     let first = setup
@@ -430,7 +458,26 @@ mod tests {
     assert_eq!(setup.backend, BACKEND_VIDEOTOOLBOX);
   }
 
-  #[cfg(not(target_os = "macos"))]
+  #[cfg(target_os = "windows")]
+  #[test]
+  fn hardware_preference_requires_a_hardware_backend_on_windows() {
+    // Hardware mode must never fall back to software: either a
+    // hardware-backed `Media Foundation` MFT is selected, or startup fails
+    // with `HardwareUnavailable` (the software Microsoft encoder does not
+    // count). CI runners have no GPU, so they exercise the failure path.
+    match create_video_encoder(
+      EncoderPreference::Hardware,
+      Dimensions::new(64, 64),
+      30,
+      Bitrate(1_000_000),
+      30,
+    ) {
+      Ok(setup) => assert_eq!(setup.backend, BACKEND_MEDIA_FOUNDATION),
+      Err(err) => assert!(matches!(err, EncodeError::HardwareUnavailable(_)), "{err}"),
+    }
+  }
+
+  #[cfg(not(any(target_os = "macos", target_os = "windows")))]
   #[test]
   fn hardware_preference_fails_clearly_without_native_encoder() {
     let err = create_video_encoder(

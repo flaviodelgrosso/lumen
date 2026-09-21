@@ -67,10 +67,13 @@ objc2-video-toolbox = { version = "0.3", features = [
 # Windows video: direct Windows.Graphics.Capture bindings (engine runs on its
 # own thread, frames delivered over a bounded channel).
 windows-capture = "2"
-# Windows video/audio: `windows-capture` drives WGC; the `windows` crate
+# Windows video/audio/encode: `windows-capture` drives WGC; the `windows` crate
 # itself provides the WASAPI loopback bindings for system-audio capture
 # (and, in tests, constructing `windows::core::Error` with the exact
-# `E_ACCESSDENIED` HRESULT to pin the elevated-window error mapping).
+# `E_ACCESSDENIED` HRESULT to pin the elevated-window error mapping), and the
+# Media Foundation bindings for the hardware H.264 encoder MFT backend
+# (`ICodecAPI::SetValue` takes a `VARIANT`, whose generated layout lives in
+# `Win32_System_Ole` alongside `Win32_System_Variant`).
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_Media_Audio",
@@ -79,9 +82,11 @@ windows = { version = "0.62", features = [
   # KernelStreaming.
   "Win32_Media_Multimedia",
   "Win32_Media_KernelStreaming",
+  "Win32_Media_MediaFoundation",
   "Win32_System_Com",
   # `IMMDevice::Activate` is gated behind these two.
   "Win32_System_Com_StructuredStorage",
+  "Win32_System_Ole",
   "Win32_System_Variant",
 ] }
 serde = { version = "1.0", features = ["derive"] }

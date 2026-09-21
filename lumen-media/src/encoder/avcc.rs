@@ -2,8 +2,10 @@
 //!
 //! `VideoToolbox` emits H.264 access units in AVCC form: each NAL unit is
 //! preceded by a 4-byte big-endian length. The WebRTC pipeline expects
-//! Annex-B, so every encoded sample is rewritten here. Kept hardware-free
-//! so the conversion is unit-tested on every platform.
+//! Annex-B, so every encoded sample is rewritten here. The Windows
+//! `Media Foundation` backend uses the same conversion defensively for
+//! encoders that emit length-prefixed instead of start-code payloads.
+//! Kept hardware-free so the conversion is unit-tested on every platform.
 
 use bytes::{BufMut, Bytes, BytesMut};
 
@@ -12,6 +14,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 const NAL_LENGTH_PREFIX: usize = 4;
 
 /// H.264 IDR slice NAL type.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const NAL_TYPE_IDR: u8 = 5;
 
 /// Convert one AVCC access unit to Annex-B.
@@ -60,6 +63,7 @@ pub(crate) fn avcc_to_annex_b(avcc: &[u8]) -> Result<Option<Bytes>, String> {
 ///
 /// `None` when the buffer is empty or the first length prefix is
 /// incomplete/zero.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn first_avcc_nal_type(avcc: &[u8]) -> Option<u8> {
   let prefix = avcc.get(..NAL_LENGTH_PREFIX)?;
   let nal_len = u32::from_be_bytes(prefix.try_into().expect("4-byte slice")) as usize;
@@ -71,6 +75,7 @@ pub(crate) fn first_avcc_nal_type(avcc: &[u8]) -> Option<u8> {
 }
 
 /// True when the access unit starts with an IDR slice (NAL type 5).
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn avcc_starts_with_idr(avcc: &[u8]) -> bool {
   first_avcc_nal_type(avcc) == Some(NAL_TYPE_IDR)
 }
@@ -81,6 +86,7 @@ pub(crate) fn avcc_starts_with_idr(avcc: &[u8]) -> bool {
 /// Returns the body unchanged when no parameter sets are cached yet or
 /// the access unit already begins with them (the encoder emitted them
 /// inline).
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn idr_with_param_sets(param_sets: Option<&Bytes>, body: Bytes) -> Bytes {
   let Some(sets) = param_sets else {
     return body;
