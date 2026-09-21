@@ -113,7 +113,7 @@ tower-http = { version = "0.7", features = ["fs", "trace"] }
 arboard = "3.6"
 dispatch = "0.2"
 image = { version = "0.25", default-features = false, features = ["png"] }
-muda = { version = "0.20", default-features = false, features = ["common-controls-v6"] }
+muda = { version = "0.20", default-features = false }
 open = "5.4"
 parking_lot = "0.12"
 tray-icon = { version = "0.25", default-features = false }
