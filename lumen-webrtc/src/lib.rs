@@ -172,10 +172,10 @@ impl PeerConnectionEventHandler for PeerHandler {
     &self,
     state: webrtc::peer_connection::RTCIceGatheringState,
   ) {
-    if state == webrtc::peer_connection::RTCIceGatheringState::Complete {
-      if let Some(tx) = self.gather_done.lock().ok().and_then(|mut g| g.take()) {
-        let _ = tx.send(());
-      }
+    if state == webrtc::peer_connection::RTCIceGatheringState::Complete
+      && let Some(tx) = self.gather_done.lock().ok().and_then(|mut g| g.take())
+    {
+      let _ = tx.send(());
     }
   }
 

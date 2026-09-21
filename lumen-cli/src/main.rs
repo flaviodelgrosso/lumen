@@ -32,6 +32,8 @@ enum Command {
   Displays,
   /// List capturable windows
   Windows,
+  /// Launch the native menu-bar/system-tray app
+  Desktop,
 }
 
 #[derive(Parser)]
@@ -141,6 +143,7 @@ fn main() -> anyhow::Result<()> {
       }
       Ok(())
     }
+    Command::Desktop => lumen_desktop::run(),
   }
 }
 
@@ -221,6 +224,12 @@ mod tests {
       no_qr: false,
       verbose: false,
     }
+  }
+
+  #[test]
+  fn cli_accepts_the_desktop_command() {
+    let cli = Cli::try_parse_from(["lumen", "desktop"]).expect("desktop must parse");
+    assert!(matches!(cli.command, Some(Command::Desktop)));
   }
 
   #[test]

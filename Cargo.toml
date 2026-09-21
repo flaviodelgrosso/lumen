@@ -13,7 +13,7 @@ members = [
 [workspace.package]
 version = "0.1.7"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.90"
 license = "MIT"
 
 [workspace.dependencies]
@@ -107,11 +107,9 @@ tokio = { version = "1.53", features = [
 ] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tower-http = { version = "0.7", features = ["fs", "trace"] }
-# Native tray/menu-bar stack (lumen-desktop): tauri's tray-icon + muda menu
-# utilities, clipboard and browser-open helpers. Default features are off:
-# the Linux GTK/libappindicator backends are out of scope and would break
-# headless Linux workspace builds; the macOS/Windows backends are compiled
-# in unconditionally.
+# Native tray/menu-bar stack (`lumen desktop`): tray icon, menu, clipboard,
+# and browser-open helpers. Default features are off: Linux desktop support is
+# out of scope and GTK/libappindicator would break headless Linux builds.
 arboard = "3.6"
 dispatch = "0.2"
 image = { version = "0.25", default-features = false, features = ["png"] }

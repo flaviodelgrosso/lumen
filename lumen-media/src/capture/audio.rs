@@ -102,14 +102,14 @@ mod macos {
       if self.format == Some(format) {
         return;
       }
-      if let Some(previous) = self.format {
-        if previous.rate != format.rate {
-          tracing::warn!(
-            "audio device rate changed {} → {}; resyncing",
-            previous.rate,
-            format.rate
-          );
-        }
+      if let Some(previous) = self.format
+        && previous.rate != format.rate
+      {
+        tracing::warn!(
+          "audio device rate changed {} → {}; resyncing",
+          previous.rate,
+          format.rate
+        );
       }
       self.lanes = needs_resampling.then(|| {
         (
@@ -361,8 +361,10 @@ mod macos {
   /// Decode LE `f32` bytes into samples.
   fn bytes_to_f32(data: &[u8]) -> Vec<f32> {
     data
-      .chunks_exact(4)
-      .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("4 bytes")))
+      .as_chunks::<4>()
+      .0
+      .iter()
+      .map(|bytes| f32::from_le_bytes(*bytes))
       .collect()
   }
 }
@@ -370,14 +372,14 @@ mod macos {
 /// Split interleaved LE `f32` bytes into one `f32` plane per channel.
 fn deinterleave(data: &[u8], channels: usize) -> Option<Vec<Vec<f32>>> {
   let frame_bytes = channels.checked_mul(4)?;
-  if frame_bytes == 0 || data.len() % frame_bytes != 0 {
+  if frame_bytes == 0 || !data.len().is_multiple_of(frame_bytes) {
     return None;
   }
   let frames = data.len() / frame_bytes;
   let mut planes = vec![Vec::with_capacity(frames); channels];
   for chunk in data.chunks_exact(frame_bytes) {
-    for (plane, sample) in planes.iter_mut().zip(chunk.chunks_exact(4)) {
-      plane.push(f32::from_le_bytes(sample.try_into().expect("4 bytes")));
+    for (plane, sample) in planes.iter_mut().zip(chunk.as_chunks::<4>().0) {
+      plane.push(f32::from_le_bytes(*sample));
     }
   }
   Some(planes)
@@ -541,7 +543,7 @@ mod tests {
       OPUS_FRAME_SAMPLES * usize::from(AUDIO_CHANNELS) * 4
     );
     // L == R for a mono tone: interleaving puts identical pairs side by side.
-    let pair = frame.samples.chunks_exact(8).next().expect("one pair");
+    let pair = frame.samples.as_chunks::<8>().0.first().expect("one pair");
     assert_eq!(&pair[..4], &pair[4..]);
   }
 

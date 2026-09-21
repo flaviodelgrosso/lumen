@@ -79,7 +79,7 @@ impl AudioEncoder for OpusAudioEncoder {
       });
     }
     let frame_bytes = usize::from(AUDIO_CHANNELS) * size_of::<f32>();
-    if frame.samples.len() % frame_bytes != 0 {
+    if !frame.samples.len().is_multiple_of(frame_bytes) {
       return Err(EncodeError::MalformedAudio(format!(
         "{} B is not a whole number of stereo f32 frames",
         frame.samples.len()
@@ -88,8 +88,10 @@ impl AudioEncoder for OpusAudioEncoder {
     self.staging.extend(
       frame
         .samples
-        .chunks_exact(size_of::<f32>())
-        .map(|b| f32::from_le_bytes(b.try_into().expect("chunk_exact(4)"))),
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|bytes| f32::from_le_bytes(*bytes)),
     );
 
     let need = OPUS_FRAME_SAMPLES * usize::from(AUDIO_CHANNELS);

@@ -31,7 +31,7 @@ pub(crate) fn from_bgra(
   height: usize,
   dst: &mut [u8],
 ) -> bool {
-  if width == 0 || height == 0 || width % 2 != 0 || height % 2 != 0 {
+  if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
     return false;
   }
   let row_bytes = width * 4;
@@ -67,7 +67,7 @@ pub(crate) fn from_bgra(
   // +128 rounding term becomes +512.
   for (block_row, uv_row) in uv_plane.chunks_exact_mut(chroma_width * 2).enumerate() {
     let top = block_row * 2;
-    for (block_col, uv) in uv_row.chunks_exact_mut(2).enumerate() {
+    for (block_col, uv) in uv_row.as_chunks_mut::<2>().0.iter_mut().enumerate() {
       let left = block_col * 2;
       let mut sums = [0_i32; 3]; // B, G, R over the 2×2 block.
       for row in [top, top + 1] {
@@ -98,7 +98,7 @@ mod tests {
   fn bgra_solid(width: usize, height: usize, rgba: [u8; 4], stride: usize) -> Vec<u8> {
     let mut buf = vec![0_u8; stride * height];
     for row in buf.chunks_exact_mut(stride) {
-      for px in row[..width * 4].chunks_exact_mut(4) {
+      for px in row[..width * 4].as_chunks_mut::<4>().0 {
         px.copy_from_slice(&rgba);
       }
     }
@@ -141,7 +141,7 @@ mod tests {
     // One red and one blue pixel per block: chroma is transformed from the
     // 2×2 block averages (B=G=R sums: 510, 0, 510), not from either primary.
     let mut src = vec![0_u8; 2 * 2 * 8];
-    for (i, px) in src.chunks_exact_mut(4).enumerate() {
+    for (i, px) in src.as_chunks_mut::<4>().0.iter_mut().enumerate() {
       if i % 2 == 0 {
         px.copy_from_slice(&[0, 0, 255, 255]); // red
       } else {

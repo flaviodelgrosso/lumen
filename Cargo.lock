@@ -1828,6 +1828,7 @@ dependencies = [
  "clap",
  "dialoguer",
  "lumen-core",
+ "lumen-desktop",
  "lumen-media",
  "lumen-server",
  "lumen-session",

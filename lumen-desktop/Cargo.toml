@@ -3,16 +3,13 @@ name = "lumen-desktop"
 description = "Lumen Desktop — native menu-bar/system-tray frontend for the Lumen sharing session"
 version.workspace = true
 edition.workspace = true
-# `tray-icon`/`muda` require 1.90; the CLI and core crates keep the workspace MSRV.
-rust-version = "1.90"
+rust-version.workspace = true
 license.workspace = true
-
-[[bin]]
-name = "lumen-desktop"
-path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 arboard.workspace = true
 image.workspace = true
 lumen-session.workspace = true

@@ -208,10 +208,10 @@ async fn next_json(stream: &mut TestWs) -> serde_json::Value {
       .expect("ws message timeout")
       .expect("ws open")
       .expect("ws frame");
-    if let WsMessage::Text(text) = frame {
-      if let Ok(value) = serde_json::from_str(&text) {
-        return value;
-      }
+    if let WsMessage::Text(text) = frame
+      && let Ok(value) = serde_json::from_str(&text)
+    {
+      return value;
     }
   }
   panic!("no json message");

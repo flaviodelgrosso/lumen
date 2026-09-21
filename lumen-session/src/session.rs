@@ -190,10 +190,10 @@ impl Session {
   pub async fn shutdown(mut self) -> Result<(), SessionError> {
     self.shutdown.cancel();
     let mut error = None;
-    if let Some(server) = self.server.take() {
-      if let Err(e) = server.join().await {
-        error = Some(SessionError::from(e));
-      }
+    if let Some(server) = self.server.take()
+      && let Err(e) = server.join().await
+    {
+      error = Some(SessionError::from(e));
     }
     if let Some(guard) = self.mdns.take() {
       guard.stop();

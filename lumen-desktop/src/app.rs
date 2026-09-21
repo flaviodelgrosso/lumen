@@ -8,14 +8,14 @@
 //! `muda` menu items and `tray-icon` handles are main-thread objects
 //! (`Rc`-backed), so the [`App`] lives on the main thread behind a
 //! thread-local and every UI mutation runs there: directly on macOS (the
-//! `AppKit` run loop and main-queue dispatch), or via the pump in `main` on
-//! other platforms, fed by the global [`PUMP`] channel.
+//! `AppKit` run loop and main-queue dispatch), or via the Windows pump.
 
 use std::cell::RefCell;
 use std::sync::Arc;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 use std::sync::OnceLock;
 
+use anyhow::Context;
 use muda::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, accelerator::Accelerator};
 use tokio::runtime::Handle;
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
@@ -24,20 +24,17 @@ use lumen_session::{LiveEngine, SessionConfig, SessionController, SessionState, 
 
 #[cfg(target_os = "macos")]
 use crate::platform;
-
-/// Event delivered to the Windows main-thread pump (macOS dispatches
-/// directly onto the main queue instead).
-#[allow(dead_code, reason = "variants constructed only on the non-macOS pump")]
+/// Event delivered to the Windows main-thread pump.
+#[allow(dead_code, reason = "constructed only by the Windows pump")]
 pub enum UiEvent {
   Menu(MenuEvent),
   Status(SessionStatus),
   Exit,
 }
 
-/// Windows-only global pump: the menu-event handler fires on muda's
-/// message thread and the state watcher on a Tokio worker, so both post
-/// to this channel and the main thread applies the UI mutation.
-#[cfg(not(target_os = "macos"))]
+/// The Windows menu handler and session watcher run off the main thread, so
+/// they publish UI work to the main thread through this one-time pump.
+#[cfg(target_os = "windows")]
 static PUMP: OnceLock<std::sync::mpsc::Sender<UiEvent>> = OnceLock::new();
 
 thread_local! {
@@ -46,7 +43,13 @@ thread_local! {
 }
 
 /// Run `f` on the main thread's [`App`], if it is still alive.
+#[cfg(target_os = "windows")]
 pub(crate) fn with_app<R>(f: impl FnOnce(&App) -> R) -> Option<R> {
+  APP.with(|slot| slot.borrow().as_ref().map(f))
+}
+
+#[cfg(target_os = "macos")]
+fn with_app<R>(f: impl FnOnce(&App) -> R) -> Option<R> {
   APP.with(|slot| slot.borrow().as_ref().map(f))
 }
 
@@ -62,13 +65,18 @@ pub struct App {
 }
 
 impl App {
-  /// Build the tray (icon appears immediately, `Idle` state), install the
-  /// menu-event handler and the state watcher, and publish the app to the
-  /// main thread. On Windows the pump receiver is returned for `main`.
-  #[must_use]
-  pub fn install(runtime: Handle) -> Option<std::sync::mpsc::Receiver<UiEvent>> {
-    #[cfg(not(target_os = "macos"))]
+  /// Build the tray, install event handlers, and publish it to the main
+  /// thread. On Windows, returns the receiver for the main-thread pump.
+  ///
+  /// # Errors
+  ///
+  /// Returns a recoverable initialization error rather than panicking when
+  /// an icon, menu, system tray, or UI pump cannot be created.
+  pub fn install(runtime: Handle) -> anyhow::Result<Option<std::sync::mpsc::Receiver<UiEvent>>> {
+    ensure_uninstalled()?;
+    #[cfg(target_os = "windows")]
     let (tx, rx) = std::sync::mpsc::channel();
+
     let app = App {
       controller: SessionController::new(Arc::new(LiveEngine), SessionConfig::default()),
       runtime,
@@ -78,30 +86,31 @@ impl App {
       dashboard: MenuItem::with_id("dashboard", "Open Dashboard", false, None::<Accelerator>),
       tray: TrayIconBuilder::new()
         .with_tooltip("Lumen — idle")
-        .with_icon(tray_icon_image())
+        .with_icon(tray_icon_image()?)
         .with_icon_as_template(cfg!(target_os = "macos"))
         .build()
-        .expect("the system tray must be available"),
+        .context("failed to create the system tray icon")?,
     };
-    app.attach_menu();
+    app.attach_menu()?;
     app.apply_status(SessionStatus {
       state: SessionState::Idle,
       error: None,
     });
-    #[cfg(not(target_os = "macos"))]
+
+    #[cfg(target_os = "windows")]
     PUMP
       .set(tx)
-      .map_err(|_| ())
-      .expect("the UI pump is installed exactly once");
-    app.install_handlers();
+      .map_err(|_| anyhow::anyhow!("the Windows UI event pump is already installed"))?;
+
     APP.with(|slot| {
-      let previous = slot.borrow_mut().replace(app);
-      assert!(previous.is_none(), "the tray app is installed exactly once");
+      slot.borrow_mut().replace(app);
     });
-    #[cfg(not(target_os = "macos"))]
-    return Some(rx);
+    with_app(App::install_handlers);
+
+    #[cfg(target_os = "windows")]
+    return Ok(Some(rx));
     #[cfg(target_os = "macos")]
-    return None;
+    return Ok(None);
   }
 
   /// Take the app off the main thread (removes the tray icon).
@@ -109,7 +118,7 @@ impl App {
     let _ = APP.with(|slot| slot.borrow_mut().take());
   }
 
-  fn attach_menu(&self) {
+  fn attach_menu(&self) -> anyhow::Result<()> {
     let menu = Menu::new();
     let header = MenuItem::with_id("lumen", "Lumen", false, None::<Accelerator>);
     let quit = MenuItem::with_id("quit", "Quit", true, None::<Accelerator>);
@@ -127,10 +136,11 @@ impl App {
       &sep3,
       &quit,
     ];
-    if let Err(e) = menu.append_items(&parts) {
-      tracing::error!("could not build tray menu: {e}");
-    }
+    menu
+      .append_items(&parts)
+      .context("failed to build the tray menu")?;
     self.tray.set_menu(Some(Box::new(menu)));
+    Ok(())
   }
 
   /// Install the global menu-event handler and the state watcher.
@@ -141,7 +151,7 @@ impl App {
     MenuEvent::set_event_handler(Some(move |event| {
       #[cfg(target_os = "macos")]
       let _ = with_app(|app| app.handle_menu(&event));
-      #[cfg(not(target_os = "macos"))]
+      #[cfg(target_os = "windows")]
       if let Some(tx) = PUMP.get() {
         let _ = tx.send(UiEvent::Menu(event));
       }
@@ -161,7 +171,7 @@ impl App {
         platform::post_to_main(move || {
           let _ = with_app(|app| app.apply_status(status));
         });
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
         if let Some(tx) = PUMP.get() {
           let _ = tx.send(UiEvent::Status(status));
         }
@@ -169,9 +179,18 @@ impl App {
     });
   }
 
-  /// Route a menu activation. Runs on the main thread on macOS; the
-  /// Windows pump calls it from the main thread as well.
+  /// Route a menu activation. Runs on the main thread on both platforms.
+  #[cfg(target_os = "windows")]
   pub fn handle_menu(&self, event: &MenuEvent) {
+    self.handle_menu_impl(event);
+  }
+
+  #[cfg(target_os = "macos")]
+  fn handle_menu(&self, event: &MenuEvent) {
+    self.handle_menu_impl(event);
+  }
+
+  fn handle_menu_impl(&self, event: &MenuEvent) {
     match event.id.as_ref() {
       "start" => {
         let _guard = self.runtime.enter();
@@ -192,8 +211,18 @@ impl App {
     }
   }
 
-  /// Project the session state onto the menu (and tooltip).
+  /// Project the session state onto the menu and tooltip.
+  #[cfg(target_os = "windows")]
   pub fn apply_status(&self, status: SessionStatus) {
+    self.apply_status_impl(status);
+  }
+
+  #[cfg(target_os = "macos")]
+  fn apply_status(&self, status: SessionStatus) {
+    self.apply_status_impl(status);
+  }
+
+  fn apply_status_impl(&self, status: SessionStatus) {
     self.start.set_enabled(status.state.can_start());
     self.stop.set_enabled(status.state.can_stop());
     self.copy.set_enabled(status.state.has_urls());
@@ -248,8 +277,12 @@ impl App {
     tokio::spawn(async move {
       controller.stop_and_wait().await;
       #[cfg(target_os = "macos")]
-      platform::post_to_main(platform::stop_app);
-      #[cfg(not(target_os = "macos"))]
+      platform::post_to_main(|| {
+        if let Err(e) = platform::stop_app() {
+          tracing::error!("could not stop the AppKit run loop: {e}");
+        }
+      });
+      #[cfg(target_os = "windows")]
       if let Some(tx) = PUMP.get() {
         let _ = tx.send(UiEvent::Exit);
       }
@@ -257,16 +290,29 @@ impl App {
   }
 }
 
+/// Refuse a second UI instance before allocating native resources.
+fn ensure_uninstalled() -> anyhow::Result<()> {
+  if APP.with(|slot| slot.borrow().is_some()) {
+    anyhow::bail!("the tray application is already running")
+  }
+  #[cfg(target_os = "windows")]
+  if PUMP.get().is_some() {
+    anyhow::bail!("the Windows UI event pump is already installed")
+  }
+  Ok(())
+}
+
 /// The embedded tray icon: a monochrome template on macOS (the menu bar
-/// tints it for light/dark), full-color elsewhere.
-fn tray_icon_image() -> Icon {
+/// tints it for light/dark), full-color on Windows.
+fn tray_icon_image() -> anyhow::Result<Icon> {
   #[cfg(target_os = "macos")]
   let bytes: &[u8] = include_bytes!("../assets/tray-template.png");
-  #[cfg(not(target_os = "macos"))]
+  #[cfg(target_os = "windows")]
   let bytes: &[u8] = include_bytes!("../assets/tray.png");
   let image = image::load_from_memory(bytes)
-    .expect("the embedded tray icon must decode")
+    .context("failed to decode the embedded tray icon")?
     .to_rgba8();
   let (width, height) = image.dimensions();
-  Icon::from_rgba(image.into_raw(), width, height).expect("the embedded tray icon is valid RGBA")
+  Icon::from_rgba(image.into_raw(), width, height)
+    .context("the embedded tray icon is not valid RGBA")
 }

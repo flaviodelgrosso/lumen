@@ -282,10 +282,10 @@ impl Drop for PlatformCapture {
   fn drop(&mut self) {
     // Never stop a stream that never started: stopping an unstarted stream
     // is an error, and panicking in a destructor aborts the process.
-    if self.started {
-      if let Err(error) = self.stream.stop_capture() {
-        tracing::debug!(error = %error, "failed to stop ScreenCaptureKit capture");
-      }
+    if self.started
+      && let Err(error) = self.stream.stop_capture()
+    {
+      tracing::debug!(error = %error, "failed to stop ScreenCaptureKit capture");
     }
     self.bridge.close();
   }
