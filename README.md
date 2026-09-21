@@ -47,10 +47,24 @@ System audio ─────► Opus ───┘
 | ----------- | ------------------------------------------ |
 | macOS       | macOS 13+ on Apple Silicon                 |
 | Windows     | Windows 10 1903+ or Windows 11, x64        |
-| Build tools | Rust 1.85+ and CMake                       |
+| Build tools | Rust 1.85+ and CMake (source builds only)  |
 | Viewer      | A modern browser on the same local network |
 
-Clone the repository and install the CLI:
+Download the archive for your platform from [GitHub Releases](https://github.com/flaviodelgrosso/lumen/releases) — no Rust, Cargo or CMake required:
+
+| Platform            | Asset                                      |
+| ------------------- | ------------------------------------------ |
+| macOS Apple Silicon | `lumen-vX.Y.Z-aarch64-apple-darwin.tar.gz` |
+| Windows x64         | `lumen-vX.Y.Z-x86_64-pc-windows-msvc.zip`  |
+
+```bash
+tar -xzf lumen-vX.Y.Z-aarch64-apple-darwin.tar.gz   # Windows: extract the .zip
+./lumen                                             # Windows: lumen.exe
+```
+
+Each release also ships `SHA256SUMS` covering both archives — verify with `shasum -a 256 -c SHA256SUMS` (macOS) or `sha256sum -c SHA256SUMS` (Git Bash on Windows).
+
+To build from source instead, using the build tools above:
 
 ```bash
 git clone https://github.com/flaviodelgrosso/lumen.git

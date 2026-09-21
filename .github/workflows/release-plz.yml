@@ -17,6 +17,10 @@ jobs:
       contents: write
       pull-requests: read
 
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      releases: ${{ steps.release.outputs.releases }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -28,11 +32,199 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Release
+        id: release
         uses: release-plz/action@v0.5
         with:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-meta:
+    name: Release metadata
+    needs: release-plz-release
+    if: needs.release-plz-release.outputs.releases_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions: {}
+
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Extract released tag and version
+        id: meta
+        env:
+          RELEASES: ${{ needs.release-plz-release.outputs.releases }}
+        run: |
+          set -euo pipefail
+          # lumen-cli is the only package with git_tag_enable/git_release_enable,
+          # so exactly one lumen-cli entry must carry the released tag.
+          if ! echo "$RELEASES" | jq -e '.[] | select(.package_name == "lumen-cli")' >/dev/null; then
+            echo "::error::release-plz reported no lumen-cli release; cannot determine release tag"
+            exit 1
+          fi
+          tag=$(echo "$RELEASES" | jq -r '.[] | select(.package_name == "lumen-cli") | .tag')
+          version=$(echo "$RELEASES" | jq -r '.[] | select(.package_name == "lumen-cli") | .version')
+          if [ -z "$tag" ] || [ "$tag" = "null" ] || [ -z "$version" ] || [ "$version" = "null" ]; then
+            echo "::error::release-plz output has no tag/version for lumen-cli: $RELEASES"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Packaging release binaries for $tag (version $version)"
+
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    needs: release-meta
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            binary: lumen
+            archive_ext: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            binary: lumen.exe
+            archive_ext: zip
+
+    env:
+      VERSION: ${{ needs.release-meta.outputs.version }}
+      ARCHIVE: lumen-${{ needs.release-meta.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}
+    steps:
+      - name: Checkout released tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-meta.outputs.tag }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build release binary (macOS)
+        if: runner.os == 'macOS'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: cargo build --release --locked --package lumen-cli --target ${{ matrix.target }}
+
+      - name: Build release binary (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cargo build --release --locked --package lumen-cli --target ${{ matrix.target }}
+
+      - name: Smoke tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          "$bin" --version
+          "$bin" --help
+          # The packaged executable must match the GitHub Release version exactly.
+          actual=$("$bin" --version)
+          expected="lumen ${VERSION}"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::${bin} --version reported '$actual', expected '$expected'"
+            exit 1
+          fi
+
+      - name: Verify ARM64 architecture (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          archs=$(lipo -archs "target/aarch64-apple-darwin/release/lumen")
+          if [ "$archs" != "arm64" ]; then
+            echo "::error::expected an arm64 Mach-O, got: $archs"
+            exit 1
+          fi
+
+      - name: Package archive (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          tar -czf "dist/$ARCHIVE" -C "target/${{ matrix.target }}/release" lumen
+
+      - name: Package archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive `
+            -Path "target/${{ matrix.target }}/release/lumen.exe" `
+            -DestinationPath "dist/$env:ARCHIVE"
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-archive-${{ matrix.target }}
+          path: dist/${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  publish-assets:
+    name: Publish release assets
+    needs: [release-meta, build-binaries]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-archive-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        env:
+          VERSION: ${{ needs.release-meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist
+          tarball="lumen-v${VERSION}-aarch64-apple-darwin.tar.gz"
+          archive="lumen-v${VERSION}-x86_64-pc-windows-msvc.zip"
+          # Never publish a partially populated release.
+          for asset in "$tarball" "$archive"; do
+            if [ ! -f "$asset" ]; then
+              echo "::error::required release asset missing: $asset"
+              exit 1
+            fi
+          done
+          sha256sum "$tarball" "$archive" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload assets to the existing GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-meta.outputs.tag }}
+          VERSION: ${{ needs.release-meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Attaches to the release-plz-created release; fails if that release is gone.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release upload "$TAG" \
+            "dist/lumen-v${VERSION}-aarch64-apple-darwin.tar.gz" \
+            "dist/lumen-v${VERSION}-x86_64-pc-windows-msvc.zip" \
+            dist/SHA256SUMS \
+            --clobber
 
   release-plz-pr:
     name: Release PR
