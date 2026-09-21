@@ -228,6 +228,23 @@ jobs:
             dist/SHA256SUMS \
             --clobber
 
+      - name: Trigger Homebrew tap sync
+        if: env.GH_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ needs.release-meta.outputs.tag }}
+          VERSION: ${{ needs.release-meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Immediacy is best-effort: the tap workflow also polls the latest
+          # release on a schedule, so a release must not fail merely because
+          # no PAT is configured for the tap repo.
+          gh api repos/flaviodelgrosso/homebrew-formulae/dispatches \
+            --method POST \
+            -f event_type=lumen-release \
+            -f "client_payload[tag]=${TAG}" \
+            -f "client_payload[version]=${VERSION}"
+
   release-plz-pr:
     name: Release PR
     runs-on: ubuntu-latest
