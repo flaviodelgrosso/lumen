@@ -223,6 +223,7 @@ jobs:
           # Attaches to the release-plz-created release; fails if that release is gone.
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
           gh release upload "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
             "dist/lumen-v${VERSION}-aarch64-apple-darwin.tar.gz" \
             "dist/lumen-v${VERSION}-x86_64-pc-windows-msvc.zip" \
             dist/SHA256SUMS \
