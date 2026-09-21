@@ -10,7 +10,7 @@ No viewer app. No account. No cloud.
 [![Release](https://img.shields.io/github/v/release/flaviodelgrosso/lumen?style=flat-square)](https://github.com/flaviodelgrosso/lumen/releases)
 ![Rust](https://img.shields.io/badge/Rust-1.85%2B-dea584?style=flat-square&logo=rust&logoColor=black)
 ![Platform](https://img.shields.io/badge/host-macOS%20ARM64%20%7C%20Windows%20x64-666?style=flat-square)
-[![License](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
 
 [Features](#features) • [Quick start](#quick-start) • [Usage](#usage) • [How it works](#how-it-works) • [Security](#security) • [Development](#development)
 
