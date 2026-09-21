@@ -71,8 +71,10 @@ version_group = "lumen"
 
 [[package]]
 name = "lumen-session"
-version_group = "lumen"
+release = false
+git_only = false
 
 [[package]]
 name = "lumen-desktop"
-version_group = "lumen"
+release = false
+git_only = false
