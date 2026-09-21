@@ -1,306 +1,302 @@
-<!-- prettier-ignore -->
 <div align="center">
 
 # 📽️ Lumen
 
-**Stream your screen — with system audio on macOS and Windows — to any browser on your LAN.**
+**Share your screen and system audio to any browser on your local network.**
+
+No viewer app. No account. No cloud.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/flaviodelgrosso/lumen/ci.yml?style=flat-square&label=CI)](https://github.com/flaviodelgrosso/lumen/actions/workflows/ci.yml)
-![Rust](https://img.shields.io/badge/rust-1.85%2B-dea584?style=flat-square&logo=rust&logoColor=black)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-666?style=flat-square)
-[![License: MIT](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/flaviodelgrosso/lumen?style=flat-square)](https://github.com/flaviodelgrosso/lumen/releases)
+![Rust](https://img.shields.io/badge/Rust-1.85%2B-dea584?style=flat-square&logo=rust&logoColor=black)
+![Platform](https://img.shields.io/badge/host-macOS%20ARM64%20%7C%20Windows%20x64-666?style=flat-square)
+[![License](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](LICENSE)
 
-⭐ If you like this project, star it on GitHub!
-
-[Features](#features) • [Quick start](#quick-start) • [Usage](#usage) • [How it works](#how-it-works) • [Security](#security) • [Troubleshooting](#troubleshooting) • [Development](#development)
+[Features](#features) • [Quick start](#quick-start) • [Usage](#usage) • [How it works](#how-it-works) • [Security](#security) • [Development](#development)
 
 </div>
 
-No viewer app. No FFmpeg. No account. Run one command, scan a QR code, watch and listen — approvals, device management and stream stats live in a built-in host dashboard.
+Lumen turns any modern browser on your LAN into a wireless display.
 
-```
-capture (SCK / WGC)       →  openh264 (H.264) ┐
-                                               ├→ WebRTC over SRTP → browser <video>
-system audio (SCK / WASAPI)   →  libopus  (Opus)  ┘
-```
+Run one command on your Mac or PC, scan the QR code from another device, approve it, and start watching. Video and system audio are captured natively, encoded locally and streamed directly over WebRTC.
 
-Works on **macOS 13+** (ScreenCaptureKit, video + system audio) and **Windows 10 1903+ / 11** (Windows.Graphics.Capture + WASAPI loopback audio — see [Windows](#windows)).
+```text
+Screen / window ──► H.264 ──┐
+                            ├──► WebRTC / SRTP ──► Browser
+System audio ─────► Opus ───┘
+```
 
 ## Features
 
-- **Zero-setup viewer** — any modern browser on the LAN; nothing to install on the viewing device
-- **Stable entry URL** — `http://lumen.local:3131`, advertised via mDNS/Bonjour; no secrets in the URL, LAN IP fallback printed alongside
-- **Native capture** — ScreenCaptureKit on macOS, Windows.Graphics.Capture on Windows, no FFmpeg
-- **System audio on macOS & Windows** — dedicated ScreenCaptureKit stream or WASAPI loopback of the default output device, Opus 48 kHz stereo
-- **Instant mid-session joins** — forced keyframe every 2 s and on every new viewer
-- **Host dashboard** — a lightweight `/admin` page (no frameworks): QR code, copy-link, live FPS/quality/audio, pending devices with Allow/Deny, connected devices with Disconnect
-- **Two approval surfaces** — confirm each viewer in the terminal (browser + device detected) or from the dashboard; kick anyone at any time from either
-- **LAN-only by design** — no STUN, no TURN, no internet; media is SRTP-encrypted end to end
-- **Single binary** — capture, encode, fan-out, HTTP, signaling and viewer in one `lumen` command
+- **Browser as the receiver** — phones, tablets, laptops and other devices only need a modern browser.
+- **Native screen capture** — ScreenCaptureKit on macOS and Windows Graphics Capture on Windows.
+- **System audio** — streamed as Opus alongside the video.
+- **Hardware H.264 encoding** — VideoToolbox on macOS and Media Foundation on Windows, with OpenH264 fallback.
+- **Multiple viewers** — one encoder feeds independent WebRTC connections without re-encoding per device.
+- **Low-latency pipeline** — stale video frames are dropped instead of building up latency.
+- **Simple discovery** — open `lumen.local:3131`, use the printed LAN address, or scan the QR code.
+- **Controlled access** — approve viewers individually or use a short pairing code for unattended sessions.
+- **Built-in host dashboard** — inspect the stream, approve requests and disconnect viewers.
+- **Local by design** — no account, STUN, TURN or cloud service is required.
 
 ## Quick start
 
 ### Requirements
 
-| Requirement                     | Notes                                                                                               |
-| ------------------------------- | --------------------------------------------------------------------------------------------------- |
-| **macOS 13+**                   | Apple Silicon or Intel. Capture via ScreenCaptureKit; system audio via a dedicated audio stream.    |
-| **Windows 10 1903+ / 11**       | x64. Display and window capture via Windows.Graphics.Capture; system audio via WASAPI loopback — see [Windows](#windows). |
-| **Rust 1.85+**                  | Edition 2024. Needed to build.                                                                      |
-| **CMake**                       | The `opus` crate compiles a bundled `libopus` at build time (`brew install cmake`).                 |
-| **Screen Recording permission** | macOS only — see below.                                                                             |
+| Host        | Requirements                               |
+| ----------- | ------------------------------------------ |
+| macOS       | macOS 13+ on Apple Silicon                 |
+| Windows     | Windows 10 1903+ or Windows 11, x64        |
+| Build tools | Rust 1.85+ and CMake                       |
+| Viewer      | A modern browser on the same local network |
 
-### Install
+Clone the repository and install the CLI:
 
-```sh
-make install
+```bash
+git clone https://github.com/flaviodelgrosso/lumen.git
+cd lumen
+cargo install --path lumen-cli --locked
 ```
 
-Or build in-tree: `cargo build --release` (→ `target/release/lumen`).
+Then start sharing:
 
-### Run
-
-```sh
+```bash
 lumen
 ```
 
-`lumen` prints the viewer entry URL, a QR code and a **host dashboard** URL. Open `http://lumen.local:3131` (or scan the QR) on any device on the same network, then approve the device in the terminal or on the dashboard. With `--auto-accept`, enter the short pairing code printed by the host instead; the QR contains only the stable viewer entrypoint. `lumen.local` is advertised via mDNS and resolves on any OS with local discovery (macOS, iOS, Android, Windows, most Smart-TV browsers); the banner also prints the **IP fallback** (`http://<lan-ip>:3131`) for networks where `.local` does not resolve — same page, same flow. If mDNS registration fails, `lumen` warns and keeps serving; nothing else changes. The dashboard (`http://127.0.0.1:3131/admin/<admin-token>`) is reachable **from the host machine only** unless you pass `--allow-lan-admin`.
+Lumen prints a viewer URL, an IP fallback, a QR code and the local host dashboard.
+
+On another device:
+
+1. Scan the QR code or open `http://lumen.local:3131`.
+2. Approve the device from the host terminal or dashboard.
+3. The stream starts directly in the browser.
 
 > [!IMPORTANT]
-> **macOS:** the terminal app you run `lumen` from (Terminal, iTerm, Ghostty, …) must be allowed under **System Settings → Privacy & Security → Screen Recording**. The first run registers the request — toggle your terminal on, then **restart it** and run again. Without the permission, `lumen` exits with a clear message instead of crashing.
-
-### Windows
-
-Windows needs **no per-app screen-recording permission** — Windows.Graphics.Capture grants capture to any ordinary process. The realistic blockers are different:
-
-- **Elevated windows** — a non-elevated `lumen` cannot capture windows running as administrator. Close the elevated target or run `lumen` from an elevated terminal.
-- **Firewall / group policy** — allow `lumen` through Windows Defender Firewall on the current (Private) network profile; enterprise policy can disable screen capture entirely.
-- **System audio** — `lumen serve` captures the default output device through WASAPI loopback. With no default output device (or no audio service) it logs `audio capture unavailable (…); streaming video only` and starts normally. Changing the default output or unplugging the captured device mid-session stops audio with a logged error; restart `lumen serve` to capture the new device. `--no-audio` is never required on Windows.
+> **macOS:** the terminal running Lumen needs **Screen Recording** permission. Enable it in **System Settings → Privacy & Security → Screen Recording**, restart the terminal, then run Lumen again.
+>
+> On macOS 15+, the terminal may also need **Local Network** permission for LAN discovery and Chromium-based viewers.
 
 > [!NOTE]
-> The Windows build is fully gated in CI (`check`/`test`/`clippy`/`build` on `windows-latest`), but CI cannot exercise screen capture, audio or video encoder hardware. The WGC path drives `windows-capture` directly and the WASAPI and Media Foundation paths the `windows` crate, all **not yet validated on hardware** — run the checklist below on a real machine before trusting them.
-
-<details>
-<summary><b>Windows hardware verification checklist</b></summary>
-
-1. `lumen displays` lists monitors and `lumen windows` lists app windows; printed ids round-trip into `--display` / `--window` (display ids are the position in the `lumen displays` listing; window ids are the `HWND` truncated to `u32`).
-2. `lumen serve` captures primary and non-primary displays at 100%, 125% and 150% scaling (WGC sizes frames by effective DPI; padded rows are repacked by the encoder).
-3. On a display larger than **3840×2160** (5K/6K/8K), `lumen serve` exits at startup with `display <W>x<H> exceeds the 3840x2160 encoder limit…`. The WGC backend cannot scale — this is expected, not a bug.
-4. Window capture of a normal (non-elevated) window, including a window on a secondary monitor with different DPI.
-5. The banner shows the Opus audio line, and a viewer on another device hears system audio after pressing Unmute (browser autoplay policy). Switching the default output device mid-session logs an audio error and stops the audio track while video keeps streaming; restarting `lumen serve` captures the new device.
-6. The banner shows `Encoder: media-foundation` on a machine with a hardware H.264 encoder (Intel Quick Sync, NVIDIA NVENC or AMD via Media Foundation). Verify smooth 1080p60 streaming with `--fps 60` and that a new viewer join on a running stream starts within ~1 frame (forced IDR). On a GPU-less VM the `auto` default logs the fallback warning and reports `openh264`, while `--encoder hardware` fails startup with `hardware H.264 encoder unavailable` — never a silent software fallback.
-7. A Chromium viewer on another device connects over mDNS (accept the firewall prompt on the **Private** profile first).
-8. Ctrl+C shuts the server down cleanly.
-
-If an item fails, the fix belongs in the platform-gated capture code in `lumen-media` (WGC in `capture/windows.rs`, WASAPI loopback in `capture/wasapi.rs`, hardware encoding in `encoder/mediafoundation.rs`) or upstream in `windows-capture`; the macOS path is unaffected either way.
-
-</details>
+> Windows may show a firewall prompt on first use. Allow Lumen on the current **Private** network so local discovery and WebRTC traffic can reach other devices.
 
 ## Usage
 
-```
-lumen serve [flags]    # capture + stream (default command)
-lumen displays         # list capturable displays
-lumen windows          # list capturable windows
+Running `lumen` is equivalent to `lumen serve` and shares the primary display at 60 FPS with system audio enabled.
+
+```bash
+# Share the primary display
+lumen
+
+# See available displays and windows
+lumen displays
+lumen windows
+
+# Share a specific display
+lumen serve --display 1
+
+# Share one window
+lumen serve --window 1234
+
+# Name a session
+lumen serve --name "Architecture Workshop"
+
+# Prefer quality over bandwidth
+lumen serve --quality high
+
+# Video only
+lumen serve --no-audio
+
+# Skip manual approval and use a pairing code
+lumen serve --auto-accept
 ```
 
-| Flag                   | Default | Meaning                                                              |
-| ---------------------- | ------- | -------------------------------------------------------------------- |
-| `--display <id>`       | primary | Display to capture (`lumen displays` for ids)                        |
-| `--window <id>`        | —       | Capture a single window instead                                      |
-| `--bind <ip>`          | auto    | LAN address to bind (interactive menu when several interfaces exist) |
-| `--port <port>`        | `3131`  | HTTP/signaling port                                                  |
-| `--fps <fps>`          | `60`    | Capture/encode frame rate                                            |
-| `--encoder <backend>`  | `auto`  | `auto` \| `software` \| `hardware` — see [Encode](#encode)           |
-| `--quality <preset>`   | `auto`  | `low` \| `medium` \| `high` \| `auto`                                |
-| `--max-bitrate <rate>` | preset  | Ceiling, e.g. `8000k` or `2M`                                        |
-| `--name <session-name>`| —       | Session name shown to viewers and on the host dashboard (≤ 64 chars)  |
-| `--auto-accept`        | off     | Admit viewers that enter the current pairing code                     |
-| `--allow-lan-admin`    | off     | Let non-localhost clients reach the host dashboard                   |
-| `--no-audio`           | off     | Stream video only (no system audio)                                  |
-| `--no-qr`              | off     | Skip the QR code                                                     |
-| `--verbose`            | off     | Debug logs + periodic `[stats]` line                                 |
+Common options:
 
-> [!TIP]
-> Unless `--max-bitrate` is set, the target bitrate is derived from resolution × fps × the quality preset and clamped to 0.8–20 Mbps. `auto` currently follows `medium`.
+| Option                 | Description                                           |
+| ---------------------- | ----------------------------------------------------- |
+| `--display <id>`       | Capture a specific display                            |
+| `--window <id>`        | Capture a specific window                             |
+| `--fps <fps>`          | Target frame rate, default `60`                       |
+| `--quality <preset>`   | `low`, `medium`, `high` or `auto`                     |
+| `--encoder <backend>`  | `auto`, `software` or `hardware`                      |
+| `--max-bitrate <rate>` | Bitrate ceiling such as `8000k` or `2M`               |
+| `--name <name>`        | Name shown to viewers and on the dashboard            |
+| `--bind <ip>`          | Select the LAN interface explicitly                   |
+| `--port <port>`        | Viewer/signaling port, default `3131`                 |
+| `--auto-accept`        | Replace manual approval with a six-digit pairing code |
+| `--no-audio`           | Disable system audio                                  |
+| `--no-qr`              | Do not print the terminal QR code                     |
+| `--allow-lan-admin`    | Make the host dashboard reachable from the LAN        |
+| `--verbose`            | Enable debug logging and pipeline statistics          |
 
-```sh
-lumen serve --window 42 --fps 60 --quality high   # one window, high motion
-lumen serve --no-audio --auto-accept              # quick, unattended video-only stream
-lumen serve --name "Architecture Workshop"           # named session for a classroom
-```
+Run `lumen serve --help` for the complete CLI reference.
+
+### Viewer controls
+
+The browser viewer includes fullscreen playback, mute/unmute, fit/fill modes, horizontal mirroring, reconnect controls and optional live WebRTC statistics.
+
+Settings are stored locally in the viewer browser.
+
+### Host dashboard
+
+Each session includes a lightweight host dashboard showing:
+
+- capture source and resolution;
+- target and live frame rate;
+- encoder, bitrate and audio status;
+- QR code and viewer URL;
+- pending connection requests;
+- connected devices.
+
+The dashboard is restricted to the host machine by default.
 
 ## How it works
 
 ### Capture
 
-Native backends grab BGRA frames — `ScreenCaptureKit` via the `screencapturekit` crate on macOS, `Windows.Graphics.Capture` via the `windows-capture` crate on Windows (engine on a dedicated thread, frames over a bounded channel). The pipeline keeps only the latest frame, so a slow encoder never builds a queue. On macOS, targets outside the encoder's bounds are floored to even and scaled to the nearest encodable size — aspect ratio preserved — by ScreenCaptureKit itself, zero CPU cost. WGC cannot scale: oversized displays fail at startup, and frames whose D3D11 row pitch exceeds the logical width keep their logical size; the encoder repacks the padded rows.
+Lumen captures BGRA frames directly from the operating system:
+
+- **macOS:** ScreenCaptureKit;
+- **Windows:** Windows Graphics Capture.
+
+System audio is captured separately using ScreenCaptureKit on macOS and WASAPI loopback on Windows.
+
+No FFmpeg process is involved.
 
 ### Encode
 
-The `auto` default prefers the platform's hardware H.264 encoder: on macOS, VideoToolbox (via safe `objc2` bindings) with hardware acceleration, real-time rate control and no frame reordering, reported as `videotoolbox`; on Windows, a hardware `Media Foundation` encoder MFT — enumerated with hardware-only flags, driven synchronously with low-latency settings and `ICodecAPI` keyframe control, reported as `media-foundation` (the built-in software encoder never qualifies; BGRA frames are converted to NV12 on the CPU first). Where no hardware encoder exists — or with `--encoder software` — the bundled `openh264` (Cisco's royalty-free binary codec, loaded at runtime) encodes instead, reported as `openh264`; `auto` falls back with a warning, while `--encoder hardware` requires the native encoder and fails startup instead of falling back silently. All backends emit H.264 Annex B with a forced IDR every 2 seconds and on every new viewer join — mid-GOP joiners start instantly — and every IDR is self-contained (SPS + PPS + IDR). The selected backend is shown in the startup banner and the host dashboard.
+Video is encoded as H.264.
 
-### Audio
+With `--encoder auto`, Lumen prefers the native hardware encoder:
 
-System audio is captured natively and normalized to 48 kHz stereo `f32` PCM for Opus: a dedicated audio-only ScreenCaptureKit stream on macOS, WASAPI loopback of the default render endpoint on Windows (device rate and channel count — commonly 44.1 kHz or surround — are downmixed and band-limited resampled to the Opus format). `libopus` (bundled via the `opus` crate) encodes 20 ms packets at 128 kbps, riding a second WebRTC track in the same `MediaStream`. Browsers block autoplaying sound, so the viewer starts **muted** — use the Unmute button in the HUD to enable sound. When no capturable output device exists, `lumen` falls back to a video-only `MediaStream` automatically.
+```text
+macOS     → VideoToolbox
+Windows   → Media Foundation
+fallback  → OpenH264
+```
+
+System audio is normalized to 48 kHz stereo and encoded as Opus.
+
+The video pipeline always keeps the latest captured frame. If encoding falls behind, stale frames are discarded instead of being queued, preventing latency from continuously increasing.
+
+A keyframe is also requested whenever a new viewer joins so playback can start immediately.
 
 ### Stream
 
-One `webrtc-rs` peer connection per viewer (negotiated `recvonly` answer from the browser's offer, SRTP, LAN-only ICE). A single encoder feeds all viewers through a bounded `tokio::sync::broadcast` per track: lagging viewers drop video frames and resync at the next keyframe, while audio resumes at the next packet — the Opus decoder conceals the gap.
+Each viewer gets its own WebRTC peer connection while all viewers share the same encoded media stream.
 
-### Serve
+```text
+                           ┌──► Browser A
+Capture ─► Encode ─► Fan-out ├──► Browser B
+                           ├──► Browser C
+                           └──► Browser D
+```
 
-`axum` serves the embedded viewer at `/`, the host dashboard and a WebSocket signaling channel per viewer: `join → approval → grant → offer → answer → ice`. Opening the page only creates a **pending join request** (`POST /api/join`); once the host approves, the poll endpoint hands the viewer an **ephemeral single-use grant** (OS-random, short TTL, constant-time checked) that authenticates exactly one signaling socket — no long-lived secret ever appears in a URL. The viewer adds auto-reconnect (a fresh join re-asks the host), double-tap fullscreen, mute, fit/fill, mirror, screen wake lock, optional WebRTC stats (`RTCPeerConnection.getStats()`) and a retry action on terminal states — all plain HTML/CSS/JS, no frameworks, no vendor detection. The dashboard polls a single admin API (`/api/admin/state`) and drives approval/disconnect through `/api/admin/...`. Join requests are bounded (saturated queue answers `429`), so a cheap repeat-POST cannot pile up state.
+Media travels over SRTP. Signaling and the embedded web UI are served locally by Lumen using Axum.
+
+There are no external signaling servers, STUN servers or TURN relays.
+
+## Platform notes
+
+### macOS
+
+Lumen uses ScreenCaptureKit for both screen and system-audio capture and VideoToolbox for hardware H.264 encoding.
+
+The supported macOS target is **Apple Silicon on macOS 13 or later**.
+
+Screen Recording permission is required. If `lumen.local` cannot be reached, also verify **Local Network** permission, VPN settings and multicast filtering on the network.
+
+### Windows
+
+Lumen uses Windows Graphics Capture, WASAPI loopback and Media Foundation.
+
+A non-elevated process cannot capture windows running as administrator. Run Lumen elevated if the target application is elevated.
+
+Displays larger than the current H.264 encoder limit of **3840×2160** cannot be downscaled by the Windows capture backend and must use a smaller display mode or window capture.
+
+> [!NOTE]
+> Windows builds are covered by CI, but real screen capture, audio devices and hardware H.264 encoders ultimately depend on the physical machine and drivers.
 
 ## Security
 
-- `http://lumen.local:3131` is intentionally **LAN-discoverable**, not an authentication secret. Opening `/` grants nothing. Lumen keeps four distinct capability concepts: **PeerId** is a public per-viewer identity shown in logs and host UI; **JoinToken** is a fresh OS-random 256-bit secret that permits polling only the request that created it; **ViewerGrant** is a separate OS-random 256-bit, short-lived, single-use signaling capability, checked in constant time before one WebSocket is opened; and **AdminToken** is an independent 256-bit dashboard/admin capability. A PeerId never reveals a grant; JoinToken, ViewerGrant, and AdminToken are not interchangeable.
-- In normal mode, every viewer needs explicit terminal or dashboard **Allow** approval. With `--auto-accept`, the host prints a six-digit pairing code generated only for that `lumen serve` process; the viewer must enter it before an unattended join is authorized. The pairing code is never persisted, never grants admin access, never enters the viewer URL, and is not embedded in the QR code. Join creation is globally bounded and additionally limited per source IPv4/IPv6 address, with throttled repeated attempts.
-- With `--name`, the session name is **public display metadata only**: it is served as a JSON string (`GET /api/join/config`, `/api/admin/state`) and rendered through text APIs, never as markup. Control characters are stripped and the length is capped at 64 characters. The name never enters a viewer URL, join token, viewer grant, admin token or QR payload, and it never influences approval or any other authorization decision.
-- Traffic is **LAN-only**: ICE is restricted to LAN addresses, mDNS `.local` candidates are resolved in query mode, and a loopback socket is bound only for a viewer that is itself on loopback. The HTTP server is plain `http://` (no TLS certificate warnings), but the media itself — video and audio — is SRTP-encrypted end to end. Do not expose the port beyond your LAN.
+Opening the viewer URL alone does not grant access to a stream.
+
+By default, every viewer must be explicitly approved by the host. After approval, Lumen issues a random, short-lived and single-use signaling grant. Join requests and pairing attempts are bounded and rate-limited.
+
+The host dashboard uses a separate random capability and is accessible only from localhost unless `--allow-lan-admin` is explicitly enabled.
+
+Media is transported using WebRTC/SRTP and stays on the local network.
 
 > [!WARNING]
-> **Audio is everything your computer plays** (macOS and Windows) — approved viewers hear notifications, calls and music. Use `--no-audio` for video-only.
+> Lumen intentionally serves its viewer and signaling endpoints over plain HTTP on the LAN. Do not expose the Lumen port to the public internet and use it only on networks you trust.
+
+> [!WARNING]
+> System audio means **everything your computer is playing**. Notifications, calls and other application audio may be heard by connected viewers. Use `--no-audio` when needed.
 
 ## Troubleshooting
 
-### `lumen.local` is not found, but the IP fallback opens
-
-The HTTP server and LAN route are working; only multicast DNS discovery is
-blocked. On the Mac that runs Lumen, grant the terminal application access at
-**System Settings → Privacy & Security → Local Network**, then quit and reopen
-that terminal before starting Lumen again. The iPhone and Mac must be on the
-same non-guest Wi-Fi network; disable VPNs and any router setting named
-**AP/client isolation**, **wireless isolation**, or **multicast filtering**.
-
-Lumen now waits for its mDNS daemon to announce before printing
-`lumen.local` as the viewer URL. If it cannot announce, it logs the reason
-and prints the working IP fallback instead. Keep using that IP until the
-network permits mDNS.
-
-### Viewers on other devices never connect
-
-Logs show:
-
-```
-Failed to write packet to 224.0.0.251:5353 … No route to host
-mDNS Query … timed out
-```
-
-**Cause:** the host cannot send IPv4 multicast. Chromium browsers obfuscate their host ICE candidates as `mDNS .local` names, and `lumen` resolves them by querying `224.0.0.251:5353`. If every such send fails, the browser's candidate is dropped, no ICE pair ever forms, and LAN viewers never connect. (`lumen serve` probes this at startup and warns.)
-
-Likely causes, in order of likelihood (labels note the OS):
-
 <details>
-<summary><b>1. The terminal app lacks the Local Network permission (macOS 15+)</b></summary>
+<summary><strong><code>lumen.local</code> does not open</strong></summary>
 
-macOS gates multicast (and direct LAN connections) behind a privacy permission owned by the app responsible for the process — for a CLI binary, that's your **terminal app** (Terminal, Ghostty, iTerm, …), not `lumen` itself. Binaries run from a terminal frequently never trigger the prompt, so grant it manually:
+Use the IP fallback printed by Lumen first.
 
-> **System Settings → Privacy & Security → Local Network → enable your terminal**
+If the IP works but `lumen.local` does not, multicast DNS is being blocked. Check:
 
-Then quit and reopen the terminal and run `lumen` again.
+- Local Network permission on macOS;
+- Windows Defender Firewall;
+- VPN software;
+- guest Wi-Fi or client isolation;
+- multicast filtering on the router.
 
 </details>
 
 <details>
-<summary><b>1b. Windows Defender Firewall blocks the app (Windows)</b></summary>
+<summary><strong>A Chromium-based viewer never connects</strong></summary>
 
-Windows shows a prompt the first time `lumen` sends UDP; dismissing it leaves outbound multicast blocked. Allow the binary on the current (Private) network profile:
+Chromium may advertise local WebRTC candidates as mDNS names. Lumen must be able to send multicast DNS queries to resolve them.
 
-```powershell
-New-NetFirewallRule -DisplayName "lumen screen sharing" `
-  -Direction Outbound -Program "$PWD\target\release\lumen.exe" `
-  -Action Allow -Profile Private
-```
-
-Repeat after each rebuild — the rule keys on the file path.
+If multicast is unavailable, Safari or another browser exposing direct LAN candidates may still work.
 
 </details>
 
 <details>
-<summary><b>2. The host's NIC cannot multicast</b></summary>
+<summary><strong>There is no audio</strong></summary>
 
-Check without `lumen`:
+Lumen falls back to video-only streaming when the system audio device cannot be captured.
 
-```sh
-python3 -c "
-import socket
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.bind(('0.0.0.0', 0))
-try:
-    s.sendto(b'x'*12, ('224.0.0.251', 5353)); print('multicast ok')
-except OSError as e:
-    print('multicast FAILED:', e)
-"
-```
+On Windows, changing or unplugging the default output device during a session stops the current audio capture. Restart Lumen after selecting the intended output device.
 
-Run this **after** granting the permission — from a terminal it inherits the same gate, so it fails identically while the permission is denied. A genuine `FAILED` after granting means the multicast route is broken (common on VMs with synthetic NICs and some VPN setups). `lumen` cannot fix that — instead:
-
-- Make the viewer offer plain IP candidates: Chrome flag `--disable-features=WebRtcHideLocalIpsWithMdns`, or
-- View from a browser that doesn't obfuscate by default (Safari).
+Browser autoplay policies also require the viewer to explicitly unmute audio.
 
 </details>
-
-<details>
-<summary><b>3. The macOS Application Firewall drops UDP</b></summary>
-
-A firewall block looks similar in the logs, but the check above distinguishes it: the firewall drops packets _silently_ (`sendto` succeeds, the answer never arrives), whereas a missing permission or a broken route fails the `sendto` itself.
-
-If `sendto` succeeds but queries still time out, allow the binary:
-
-```sh
-sudo /usr/libexec/ApplicationFirewall/socketfilterfw \
-  --add "$(pwd)/target/release/lumen"
-sudo /usr/libexec/ApplicationFirewall/socketfilterfw \
-  --unblockapp "$(pwd)/target/release/lumen"
-```
-
-> Repeat after each rebuild — the firewall keys on the file path. Released/notarized builds prompt instead.
-
-A browser on the **same Mac** connects over loopback regardless, which is why local tests can pass while LAN devices fail.
-
-</details>
-
-### Other errors
-
-**`Failed to write packet to <lan-ip>:<port> from 127.0.0.1:<port>: Can't assign requested address (os error 49)`**
-A loopback-bound ICE socket is being used to reach a LAN peer. `lumen` binds `127.0.0.1:0` only for a viewer that is itself on loopback, so this shouldn't appear — if it does, the viewer is likely being mis-detected (e.g. behind a proxy that makes the connection look local).
-
-**`display size … is not encodable`**
-A capture larger than 3840×2160 that Windows Graphics Capture cannot scale (see [Capture](#capture)). Pick a smaller `--display` target or a window.
 
 ## Development
 
-```
-lumen-core      shared types, config, errors
-lumen-media     native video (SCK / WGC) + system-audio (SCK / WASAPI) + openh264/videotoolbox/media-foundation/opus wrappers + fake sources/encoders (tests)
-lumen-webrtc    per-viewer peer connection (video + audio tracks)
-lumen-server    axum HTTP + WebSocket signaling + fan-out + token/approval/user-agent parsing + embedded viewer
-lumen-cli       `lumen` binary (serve/displays/windows), LAN interface discovery
-```
+Lumen is a Rust workspace split by responsibility:
 
-**Gates**, via the `Makefile`:
+| Crate          | Purpose                                                   |
+| -------------- | --------------------------------------------------------- |
+| `lumen-core`   | Shared configuration, media types and statistics          |
+| `lumen-media`  | Native capture, H.264 encoders and Opus audio             |
+| `lumen-webrtc` | Per-viewer WebRTC connections and media tracks            |
+| `lumen-server` | HTTP, signaling, approvals, dashboard and embedded viewer |
+| `lumen-cli`    | CLI, LAN discovery and pipeline orchestration             |
 
-```sh
-make fmt-check   # formatting
-make check       # compile check
-make clippy      # warnings as errors
-make test        # test suite
-make build       # release build
-make ci          # all of the above (minus build)
-make install     # install the release binary
+Run the complete quality gate with:
+
+```bash
+make ci
 ```
 
-**Windows.** The full gate runs on a `windows-latest` CI runner (check/test/clippy/release build). Off-Windows you can still type-check the pure-Rust half of the workspace for the MSVC target:
+Or individual tasks:
 
-```sh
-rustup target add x86_64-pc-windows-msvc
-cargo check -p lumen-core --all-targets --locked --target x86_64-pc-windows-msvc
+```bash
+make fmt-check
+make check
+make clippy
+make test
+make build
 ```
 
-The rest of the workspace sits behind C toolchains (`lumen-media`'s bundled `opus`/`openh264`, `lumen-webrtc`'s `ring`) and can't cross-compile from macOS; it is validated on the `windows-latest` runner only.
-
-> [!NOTE]
->
-> - `screencapturekit` ships a Swift bridge; its `libswift_Concurrency.dylib` dependency is resolved through the `/usr/lib/swift` rpath that `.cargo/config.toml` adds for macOS targets (the crate's own build script only bakes it into its own targets, not downstream binaries).
-> - `openh264` loads a prebuilt Cisco library at runtime; the `openh264` crate vendors it under a BSD-2-style license.
+The project is tested in CI on both macOS and Windows.
