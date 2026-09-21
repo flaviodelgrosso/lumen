@@ -78,7 +78,7 @@ Windows needs **no per-app screen-recording permission** — Windows.Graphics.Ca
 - **System audio** — `lumen serve` captures the default output device through WASAPI loopback. With no default output device (or no audio service) it logs `audio capture unavailable (…); streaming video only` and starts normally. Changing the default output or unplugging the captured device mid-session stops audio with a logged error; restart `lumen serve` to capture the new device. `--no-audio` is never required on Windows.
 
 > [!NOTE]
-> The Windows build is fully gated in CI (`check`/`test`/`clippy`/`build` on `windows-latest`), but CI cannot exercise screen capture or audio hardware. The WGC path drives `windows-capture` directly and the WASAPI path the `windows` crate, both **not yet validated on hardware** — run the checklist below on a real machine before trusting them.
+> The Windows build is fully gated in CI (`check`/`test`/`clippy`/`build` on `windows-latest`), but CI cannot exercise screen capture, audio or video encoder hardware. The WGC path drives `windows-capture` directly and the WASAPI and Media Foundation paths the `windows` crate, all **not yet validated on hardware** — run the checklist below on a real machine before trusting them.
 
 <details>
 <summary><b>Windows hardware verification checklist</b></summary>
@@ -88,10 +88,11 @@ Windows needs **no per-app screen-recording permission** — Windows.Graphics.Ca
 3. On a display larger than **3840×2160** (5K/6K/8K), `lumen serve` exits at startup with `display <W>x<H> exceeds the 3840x2160 encoder limit…`. The WGC backend cannot scale — this is expected, not a bug.
 4. Window capture of a normal (non-elevated) window, including a window on a secondary monitor with different DPI.
 5. The banner shows the Opus audio line, and a viewer on another device hears system audio after pressing Unmute (browser autoplay policy). Switching the default output device mid-session logs an audio error and stops the audio track while video keeps streaming; restarting `lumen serve` captures the new device.
-6. A Chromium viewer on another device connects over mDNS (accept the firewall prompt on the **Private** profile first).
-7. Ctrl+C shuts the server down cleanly.
+6. The banner shows `Encoder: media-foundation` on a machine with a hardware H.264 encoder (Intel Quick Sync, NVIDIA NVENC or AMD via Media Foundation). Verify smooth 1080p60 streaming with `--fps 60` and that a new viewer join on a running stream starts within ~1 frame (forced IDR). On a GPU-less VM the `auto` default logs the fallback warning and reports `openh264`, while `--encoder hardware` fails startup with `hardware H.264 encoder unavailable` — never a silent software fallback.
+7. A Chromium viewer on another device connects over mDNS (accept the firewall prompt on the **Private** profile first).
+8. Ctrl+C shuts the server down cleanly.
 
-If an item fails, the fix belongs in the platform-gated capture code in `lumen-media` (WGC in `capture/windows.rs`, WASAPI loopback in `capture/wasapi.rs`) or upstream in `windows-capture`; the macOS path is unaffected either way.
+If an item fails, the fix belongs in the platform-gated capture code in `lumen-media` (WGC in `capture/windows.rs`, WASAPI loopback in `capture/wasapi.rs`, hardware encoding in `encoder/mediafoundation.rs`) or upstream in `windows-capture`; the macOS path is unaffected either way.
 
 </details>
 
@@ -137,7 +138,7 @@ Native backends grab BGRA frames — `ScreenCaptureKit` via the `screencaptureki
 
 ### Encode
 
-The `auto` default prefers the platform's hardware H.264 encoder: on macOS, VideoToolbox (via safe `objc2` bindings) with hardware acceleration, real-time rate control and no frame reordering, reported as `videotoolbox`. Where no hardware encoder exists — or with `--encoder software` — the bundled `openh264` (Cisco's royalty-free binary codec, loaded at runtime) encodes instead, reported as `openh264`; `auto` falls back with a warning, while `--encoder hardware` requires VideoToolbox and fails startup instead of falling back silently. Both backends emit H.264 Annex B with a forced IDR every 2 seconds and on every new viewer join — mid-GOP joiners start instantly — and every IDR is self-contained (SPS + PPS + IDR). The selected backend is shown in the startup banner and the host dashboard.
+The `auto` default prefers the platform's hardware H.264 encoder: on macOS, VideoToolbox (via safe `objc2` bindings) with hardware acceleration, real-time rate control and no frame reordering, reported as `videotoolbox`; on Windows, a hardware `Media Foundation` encoder MFT — enumerated with hardware-only flags, driven synchronously with low-latency settings and `ICodecAPI` keyframe control, reported as `media-foundation` (the built-in software encoder never qualifies; BGRA frames are converted to NV12 on the CPU first). Where no hardware encoder exists — or with `--encoder software` — the bundled `openh264` (Cisco's royalty-free binary codec, loaded at runtime) encodes instead, reported as `openh264`; `auto` falls back with a warning, while `--encoder hardware` requires the native encoder and fails startup instead of falling back silently. All backends emit H.264 Annex B with a forced IDR every 2 seconds and on every new viewer join — mid-GOP joiners start instantly — and every IDR is self-contained (SPS + PPS + IDR). The selected backend is shown in the startup banner and the host dashboard.
 
 ### Audio
 
@@ -272,7 +273,7 @@ A capture larger than 3840×2160 that Windows Graphics Capture cannot scale (see
 
 ```
 lumen-core      shared types, config, errors
-lumen-media     native video (SCK / WGC) + system-audio (SCK / WASAPI) + openh264/videotoolbox/opus wrappers + fake sources/encoders (tests)
+lumen-media     native video (SCK / WGC) + system-audio (SCK / WASAPI) + openh264/videotoolbox/media-foundation/opus wrappers + fake sources/encoders (tests)
 lumen-webrtc    per-viewer peer connection (video + audio tracks)
 lumen-server    axum HTTP + WebSocket signaling + fan-out + token/approval/user-agent parsing + embedded viewer
 lumen-cli       `lumen` binary (serve/displays/windows), LAN interface discovery
