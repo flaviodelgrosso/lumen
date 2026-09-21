@@ -257,7 +257,9 @@ jobs:
   release-plz-pr:
     name: Release PR
     runs-on: ubuntu-latest
-    if: github.repository_owner == 'flaviodelgrosso'
+    if: >
+      github.repository_owner == 'flaviodelgrosso' &&
+      !startsWith(github.event.head_commit.message, 'chore: release v')
 
     permissions:
       contents: write
