@@ -223,10 +223,28 @@ jobs:
           # Attaches to the release-plz-created release; fails if that release is gone.
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
           gh release upload "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
             "dist/lumen-v${VERSION}-aarch64-apple-darwin.tar.gz" \
             "dist/lumen-v${VERSION}-x86_64-pc-windows-msvc.zip" \
             dist/SHA256SUMS \
             --clobber
+
+      - name: Trigger Homebrew tap sync
+        if: env.GH_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ needs.release-meta.outputs.tag }}
+          VERSION: ${{ needs.release-meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Immediacy is best-effort: the tap workflow also polls the latest
+          # release on a schedule, so a release must not fail merely because
+          # no PAT is configured for the tap repo.
+          gh api repos/flaviodelgrosso/homebrew-formulae/dispatches \
+            --method POST \
+            -f event_type=lumen-release \
+            -f "client_payload[tag]=${TAG}" \
+            -f "client_payload[version]=${VERSION}"
 
   release-plz-pr:
     name: Release PR
