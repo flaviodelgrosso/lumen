@@ -237,14 +237,22 @@ jobs:
           VERSION: ${{ needs.release-meta.outputs.version }}
         run: |
           set -euo pipefail
-          # Immediacy is best-effort: the tap workflow also polls the latest
-          # release on a schedule, so a release must not fail merely because
-          # no PAT is configured for the tap repo.
+          # The tap repo listens for this dispatch instead of polling the
+          # latest release on a schedule; if this step is skipped or fails,
+          # recover by running update-lumen.yml (workflow_dispatch) on the
+          # tap repo.
           gh api repos/flaviodelgrosso/homebrew-formulae/dispatches \
             --method POST \
             -f event_type=lumen-release \
             -f "client_payload[tag]=${TAG}" \
             -f "client_payload[version]=${VERSION}"
+
+      - name: Warn when the tap was not notified
+        if: env.GH_TOKEN == ''
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          echo "::warning::HOMEBREW_TAP_TOKEN is not configured, so the Homebrew tap was not notified of this release. Run update-lumen.yml (workflow_dispatch) on flaviodelgrosso/homebrew-formulae to bump the formula."
 
   release-plz-pr:
     name: Release PR
