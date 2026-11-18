@@ -54,7 +54,7 @@ System audio ─────► Opus ───┘
 On Apple Silicon Macs, install with Homebrew:
 
 ```bash
-brew install flaviodelgrosso/formulae/lumen
+brew install flaviodelgrosso/tap/lumen
 ```
 
 Or download the archive for your platform from [GitHub Releases](https://github.com/flaviodelgrosso/lumen/releases) — no Rust, Cargo or CMake required:
