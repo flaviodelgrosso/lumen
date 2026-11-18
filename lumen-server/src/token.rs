@@ -198,6 +198,6 @@ mod tests {
     let a = PeerId::generate().unwrap();
     let b = PeerId::generate().unwrap();
     assert_ne!(a, b);
-    assert!(!a.to_string().is_empty());
+    assert_ne!(a.to_string(), "");
   }
 }
