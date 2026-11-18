@@ -242,7 +242,7 @@ jobs:
           # latest release on a schedule; if this step is skipped or fails,
           # recover by running update-lumen.yml (workflow_dispatch) on the
           # tap repo.
-          gh api repos/flaviodelgrosso/homebrew-formulae/dispatches \
+          gh api repos/flaviodelgrosso/homebrew-tap/dispatches \
             --method POST \
             -f event_type=lumen-release \
             -f "client_payload[tag]=${TAG}" \
@@ -253,7 +253,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          echo "::warning::HOMEBREW_TAP_TOKEN is not configured, so the Homebrew tap was not notified of this release. Run update-lumen.yml (workflow_dispatch) on flaviodelgrosso/homebrew-formulae to bump the formula."
+          echo "::warning::HOMEBREW_TAP_TOKEN is not configured, so the Homebrew tap was not notified of this release. Run update-lumen.yml (workflow_dispatch) on flaviodelgrosso/homebrew-tap to bump the formula."
 
   release-plz-pr:
     name: Release PR
